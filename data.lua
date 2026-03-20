@@ -6,22 +6,6 @@ data:extend({
 		hidden = true,
 	},
 	{
-		type = "custom-input",
-		name = "hexcoder_close_menu",
-		key_sequence = "E",
-		--consuming = "game-only",
-		--linked_game_control = "close-menu",
-		hidden = true,
-	},
-	{
-		type = "custom-input",
-		name = "hexcoder_close_escape",
-		key_sequence = "Escape",
-		--consuming = "game-only",
-		--linked_game_control = "close-menu",
-		hidden = true,
-	},
-	{
 		type = "sound",
 		name = "hexcoder-radar-open-sound",
 		filename = "__base__/sound/open-close/beacon-open.ogg" ,
