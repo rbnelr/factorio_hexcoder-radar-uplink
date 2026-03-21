@@ -1,3 +1,4 @@
+local util = require("util")
 local glib = require("__glib__/glib")
 local default_frame = require("__glib__/examples/default_frame")
 local prnt = {sound=defines.print_sound.never}
@@ -26,16 +27,17 @@ local function get_entity_data(entity)
 end
 
 local function is_radar(entity)
-	return entity.valid and entity.type == "radar" and entity.name == "radar"
+	return entity and entity.valid and entity.type == "radar" and entity.name == "radar"
 end
 local function get_radar_data_or_init(entity)
 	local data = get_entity_data(entity)
-	if (not data) then
+	if not data then
 		local reg_id, unit_num = script.register_on_object_destroyed(entity)
 		data = {
+			entity = entity,
 			read_plat_requests = false,
 			read_plat_location = false,
-			selected_platform = nil
+			selected_platform = nil -- LuaSpacePlatform.index
 		}
 		storage.data[unit_num] = data
 	end
@@ -77,22 +79,22 @@ local function radar_gui_update_platforms(gui, data)
 	local sel_idx = nil -- [None]
 	
 	local force = gui.entity and gui.entity.valid and gui.entity.force
-	if (force) then
+	if force then
 		for i, platf in pairs(force.platforms) do
 			--game.print(" > ".. i .."platform ".. platf.name)
 			
 			drop_down_strings[counter] = platf.name
-			drop_down_platforms[counter] = platf
+			drop_down_platforms[counter] = platf.index
 			
 			-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
-			if (data.selected_platform == platf) then
+			if data.selected_platform == platf.index then
 				sel_idx = counter
 			end
 			counter = counter+1
 		end
 	end
 	
-	if (not sel_idx) then -- selected_platform not found, it could have been deleted
+	if not sel_idx then -- selected_platform not found, it could have been deleted
 		data.selected_platform = nil
 		sel_idx = 1 -- [None]
 	end
@@ -105,8 +107,8 @@ end
 function handlers.radar_checkbox(event)
 	local data = get_entity_data(storage.open_guis[event.player_index].entity)
 	
-	if     (event.element.name == "mode1") then data.read_plat_requests = event.element.state
-	elseif (event.element.name == "mode2") then data.read_plat_location = event.element.state end
+	if     event.element.name == "mode1" then data.read_plat_requests = event.element.state
+	elseif event.element.name == "mode2" then data.read_plat_location = event.element.state end
 	
 	--game.print("radar_checkbox ".. serpent.block(data))
 end
@@ -114,7 +116,7 @@ function handlers.radar_drop_down(event)
 	local gui = storage.open_guis[event.player_index]
 	local data = get_entity_data(gui.entity)
 	
-	if (event.element.name == "platform_drop_down") then
+	if event.element.name == "platform_drop_down" then
 		data.selected_platform = gui.drop_down_platforms[event.element.selected_index]
 	end
 	
@@ -186,8 +188,8 @@ end
 
 local function open_custom_entity_gui(player, entity)
 	local open_gui = player.opened and storage.open_guis[player.index]
-	if (open_gui and entity == open_gui.entity) then return end
-	game.print(">>> open radar gui", prnt)
+	if open_gui and entity == open_gui.entity then return end
+	game.print("open radar gui", prnt)
 	
 	-- regular entity gui is closed and makes our UI close via E and Escape automatically
 	-- close possible custom gui first to prevent name collsion
@@ -195,12 +197,12 @@ local function open_custom_entity_gui(player, entity)
 	player.opened = create_radar_gui(player, entity)
 end
 script.on_event(defines.events.on_gui_closed, function(event)
-	game.print(">>> on_gui_closed", prnt)
-	if (event.element and event.element.name == "hexcoder_radar_gui") then
+	game.print("on_gui_closed", prnt)
+	if event.element and event.element.name == "hexcoder_radar_gui" then
 		local player = game.get_player(event.player_index)
 		
 		-- Dont bother with this if I cant get close sound to trigger only when closing, not when switching guis
-		--if (event.element.name == "hexcoder_radar_gui") then
+		--if event.element.name == "hexcoder_radar_gui" then
 		--	player.play_sound{ path="hexcoder-radar-close-sound" }
 		--end
 		
@@ -211,7 +213,7 @@ end)
 script.on_event(defines.events.on_object_destroyed, function(event)
 	for player_i, gui in pairs(storage.open_guis) do
 		-- close open entity gui if entity destroyed
-		if (event.useful_id == gui.entity.unit_number) then
+		if event.useful_id == gui.entity.unit_number then
 			game.get_player(player_i).opened = nil
 		end
 	end
@@ -222,14 +224,11 @@ end)
 -- reacting to LMB requires custom input(?)
 script.on_event("hexcoder_left_click", function(event)
 	local player = game.get_player(event.player_index)
-	local free_cursor = not (player.cursor_stack.valid_for_read or player.cursor_ghost or player.cursor_record)
 	local entity = player.selected -- hovered entity
-	local can_open_gui = free_cursor and entity and entity.valid and player.can_reach_entity(entity)
+	local free_cursor = not (player.cursor_stack.valid_for_read or player.cursor_ghost or player.cursor_record)
 	
-	if (can_open_gui) then
-		game.print(">>> on_entity_click ".. entity.name, prnt)
-		
-		if (is_radar(entity)) then
+	if free_cursor then
+		if is_radar(entity) and player.can_reach_entity(entity) then
 			open_custom_entity_gui(player, entity)
 		end
 	end
@@ -240,7 +239,7 @@ script.on_nth_tick(6, function(event)
 		local player = game.get_player(player_i)
 		-- close custom gui once out of reach
 		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
-		if (not valid) then
+		if not valid then
 			player.opened = nil
 		end
 	end
@@ -249,17 +248,17 @@ end)
 --	game.print(">>> on_player_changed_position ")
 --	
 --	local gui = storage.open_guis[event.player_index]
---	if (gui) then
---		-- close custom gui once out of reach
+--	if gui then
+--		-- close custom gui once out of reacha
 --		local player = game.get_player(event.player_index)
 --		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
---		if (not valid) then
+--		if not valid then
 --			player.opened = nil
 --		end
 --	end
 --end)
 
-script.on_nth_tick(60, function(event)
+script.on_nth_tick(1, function(event)
 	--for _, player in pairs(game.players) do
 	--	game.print(">> cursor: ")
 	--	game.print(">>  cursor_stack: ".. serpent.block(player.cursor_stack))
@@ -271,27 +270,93 @@ script.on_nth_tick(60, function(event)
 	--for player_i, gui in pairs(storage.open_guis) do
 	--	gui.entity.clone{position={x=gui.entity.position.x+5, y=gui.entity.position.y}}
 	--end
+	
+	--for id, data in pairs(storage.data) do
+	--	data.entity.
+	--end
 end)
 
-glib.register_handlers(handlers)
-
-script.on_event(defines.events.on_entity_cloned, function(event)
+-- only on_entity_cloned seems to work right now, event.tags is always nil?
+local function on_created_entity(event)
+	--game.print("on_created_entity (".. serpent.block(event) ..")")
+	--game.print(serpent.block(event.tags))
 	
-end, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
-script.on_event(defines.events.on_entity_settings_pasted, function(event)
-	if (is_radar(source) and is_radar(destination)) then
-		
-		--local gui = { refs=refs, entity=entity, entity_id=script.register_on_object_destroyed(entity) }
-		--local gui = { refs=refs, entity=entity, entity_id=script.register_on_object_destroyed(entity) }
+	local entity = event.entity or event.destination
+	
+	if event.source then
+		storage.data[entity.unit_number] = util.table.deepcopy(storage.data[event.source.unit_number])
+	elseif event.tags then
+		storage.data[entity.unit_number] = util.table.deepcopy(event.tags["hexcoder_radar_gui"])
 	end
-end) -- can't filter
+end
+for _, event in ipairs({
+	defines.events.on_built_entity,
+	defines.events.on_robot_built_entity,
+	defines.events.on_space_platform_built_entity,
+	defines.events.script_raised_built,
+	defines.events.script_raised_revive,
+	defines.events.on_entity_cloned,
+}) do script.on_event(event, on_created_entity
+--, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}}
+) end
 
--- script_raised_teleported (machines can be moved by scripts using this?)
--- on_entity_cloned (machines can be duplicated by scripts using this, ex. SE trains with space elevator and spaceships?)
+script.on_event(defines.events.on_player_setup_blueprint, function (event)
+	local player = game.get_player(event.player_index)
+	local blueprint = event.stack
+	if not blueprint or not blueprint.valid_for_read then blueprint = player.blueprint_to_setup end
+	if not blueprint or not blueprint.valid_for_read then blueprint = player.cursor_stack end
+	if not blueprint or not blueprint.valid_for_read then return end
+	
+	local entities = blueprint.get_blueprint_entities()
+	local mapping = nil
+	if not entities then return end
+	local changed = false
+	
+	for i, bp_entity in pairs(entities) do
+		if bp_entity.name == "radar" then
+			mapping = mapping or event.mapping.get()
+			local entity = mapping[i]
+			if is_radar(entity) then
+				game.print("entity.storage: ".. serpent.block(storage.data[entity.unit_number]))
+				
+				blueprint.set_blueprint_entity_tag(i, "hexcoder_radar_gui", util.table.deepcopy(storage.data[entity.unit_number]))
+				--local tags = entity.tags or {}
+				--tags["hexcoder_radar_gui"] = util.table.deepcopy(storage.data[entity.unit_number])
+				--entity.tags = tags
+				
+				game.print("entity.tags: ".. serpent.block(blueprint.get_blueprint_entity_tag(i, "hexcoder_radar_gui")))
+				
+				changed = true
+			end
+		end
+	end
+	if changed then
+		blueprint.set_blueprint_entities(entities)
+	end
+end)
 
--- on_entity_settings_pasted
--- keep settings on upgrade? (not relevant for me I suppose?)
--- on_player_setup_blueprint ?
+-- doesn't get called for entities with no vanilla settings :(
+script.on_event(defines.events.on_entity_settings_pasted, function(event)
+	--game.print("on_entity_settings_pasted")
+end)
 
+-- script_raised_teleported 
 -- on_player_flipped_entity
 -- on_player_rotated_entity
+
+--[[
+found this: might this make gui even simpler?
+
+data:extend({
+  {
+    type = "custom-input", key_sequence = "",
+    name = mod_prefix .. "open-gui",
+    linked_game_control = "open-gui",
+    include_selected_prototype = true,
+  }
+})
+
+
+--]]
+
+glib.register_handlers(handlers)
