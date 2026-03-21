@@ -7,11 +7,13 @@ function init(event)
 	storage.open_guis = {}
 end
 
+local handlers = {}
+
 function _reset(event) -- allow me to fix outdates state during dev
 	storage.silos = nil
 	storage.data = nil
 	storage.open_guis = nil
-	for _, p in pairs(game.players) do player.opened = nil end
+	for _, player in pairs(game.players) do player.opened = nil end
 	
 	init()
 end
@@ -19,11 +21,25 @@ script.on_init(function(event)
 	init()
 end)
 
-local function get(entity_id)
-	return storage.data[entity_id]
+local function get_entity_data(entity)
+	return storage.data[entity.unit_number]
 end
+
 local function is_radar(entity)
 	return entity.valid and entity.type == "radar" and entity.name == "radar"
+end
+local function get_radar_data_or_init(entity)
+	local data = get_entity_data(entity)
+	if (not data) then
+		local reg_id, unit_num = script.register_on_object_destroyed(entity)
+		data = {
+			read_plat_requests = false,
+			read_plat_location = false,
+			selected_platform = nil
+		}
+		storage.data[unit_num] = data
+	end
+	return data
 end
 
 --[[
@@ -49,6 +65,9 @@ more ideas:
   
 --]]
 
+-- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
+-- I think setting drop_down.items while it is open breaks it (?)
+-- Keep track of platform by LuaPlatform not name, not sure if this is ideal or if by name would be better
 local function radar_gui_update_platforms(gui, data)
 	-- In theory this only needs to be updated once per tick, but each player can only have one gui open anyway
 	-- duplicates work in multiplayer, but in theory players could each have different forces!
@@ -83,10 +102,8 @@ local function radar_gui_update_platforms(gui, data)
 	gui.refs.platform_drop_down.selected_index = sel_idx
 end
 
-local handlers = {}
-
 function handlers.radar_checkbox(event)
-	local data = get(storage.open_guis[event.player_index].entity_id)
+	local data = get_entity_data(storage.open_guis[event.player_index].entity)
 	
 	if     (event.element.name == "mode1") then data.read_plat_requests = event.element.state
 	elseif (event.element.name == "mode2") then data.read_plat_location = event.element.state end
@@ -95,7 +112,7 @@ function handlers.radar_checkbox(event)
 end
 function handlers.radar_drop_down(event)
 	local gui = storage.open_guis[event.player_index]
-	local data = get(gui.entity_id)
+	local data = get_entity_data(gui.entity)
 	
 	if (event.element.name == "platform_drop_down") then
 		data.selected_platform = gui.drop_down_platforms[event.element.selected_index]
@@ -156,20 +173,10 @@ local function create_radar_gui(player, entity)
 		--}
 	}, refs)
 	
-	-- Store radar settings first time radar is opened, leave at default otherwise
-	local data = get(gui.entity_id)
-	if (not data) then
-		data = {
-			read_plat_requests = false,
-			read_plat_location = false,
-			selected_platform = nil
-		}
-		storage.data[gui.entity_id] = data
-	end
-	
-	local gui = { refs=refs, entity=entity, entity_id=script.register_on_object_destroyed(entity) }
+	local gui = { refs=refs, entity=entity }
 	storage.open_guis[player.index] = gui
 	
+	local data = get_radar_data_or_init(gui.entity)
 	radar_gui_update(gui, data)
 	
 	player.play_sound{ path="hexcoder-radar-open-sound" }
@@ -204,12 +211,12 @@ end)
 script.on_event(defines.events.on_object_destroyed, function(event)
 	for player_i, gui in pairs(storage.open_guis) do
 		-- close open entity gui if entity destroyed
-		if (event.registration_number == gui.entity_id) then
+		if (event.useful_id == gui.entity.unit_number) then
 			game.get_player(player_i).opened = nil
 		end
 	end
 	
-	storage.data[event.registration_number] = nil
+	storage.data[event.useful_id] = nil
 end)
 
 -- reacting to LMB requires custom input(?)
@@ -260,9 +267,24 @@ script.on_nth_tick(60, function(event)
 	--	game.print(">>  cursor_record: ".. serpent.block(player.cursor_record))
 	--	game.print(">>  has_cursor: ".. (has_cursor and "true" or "false"))
 	--end
+	
+	--for player_i, gui in pairs(storage.open_guis) do
+	--	gui.entity.clone{position={x=gui.entity.position.x+5, y=gui.entity.position.y}}
+	--end
 end)
 
 glib.register_handlers(handlers)
+
+script.on_event(defines.events.on_entity_cloned, function(event)
+	
+end, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
+script.on_event(defines.events.on_entity_settings_pasted, function(event)
+	if (is_radar(source) and is_radar(destination)) then
+		
+		--local gui = { refs=refs, entity=entity, entity_id=script.register_on_object_destroyed(entity) }
+		--local gui = { refs=refs, entity=entity, entity_id=script.register_on_object_destroyed(entity) }
+	end
+end) -- can't filter
 
 -- script_raised_teleported (machines can be moved by scripts using this?)
 -- on_entity_cloned (machines can be duplicated by scripts using this, ex. SE trains with space elevator and spaceships?)
