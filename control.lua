@@ -3,74 +3,61 @@ local default_frame = require("__glib__/examples/default_frame")
 local prnt = {sound=defines.print_sound.never}
 
 function init(event)
+	storage.data = {} -- per entity data
 	storage.open_guis = {}
 end
 
-local _do_reset = nil
-function _reset(event)
-	if (_do_reset) then _do_reset = false
-		storage.silos = nil
-		storage.data = nil
-		storage.open_guis = nil
-		
-		init()
-	end
+function _reset(event) -- allow me to fix outdates state during dev
+	storage.silos = nil
+	storage.data = nil
+	storage.open_guis = nil
+	for _, p in pairs(game.players) do player.opened = nil end
+	
+	init()
 end
 script.on_init(function(event)
 	init()
 end)
-script.on_load(function(event) -- during dev: reset storage fully to enable iterating without errors
-	_do_reset = true
-end)
+
+local function get(entity_id)
+	return storage.data[entity_id]
+end
+local function is_radar(entity)
+	return entity.valid and entity.type == "radar" and entity.name == "radar"
+end
 
 --[[
+Ideas:
+  Radar Control
+  [platform checkbox]  | Circuit connection
+  *platform status     | connected mode + config
+  
+  default option in dropdown should be [Default] -> Status: Communicating with all radars on surface
+  
+  -> Limit so platform status is known, but no cross planet communicaion and only with orbiting platforms?
+   -> though arguably why even limit it like this? only use might be less spoiling of gleba science if made intelligent.
+    -> simply add a "universal platform comms" and "universal named comms" settings options
+  Note that right now radars can read platforms, but platforms cannot read surface, is that wrong?
+   -> either for radars in space read default surface radar circuit / named radars
+   -> or instead avoid requiring radars on platform and make platform itself have these options
+   -> or, if radars can read and write, simply select platform on surface radar with send option (arrives as circuit on hub)
+  
+more ideas:
+  platform status: In Orbit: Planet siganl (1), In Transit Platet from/to as 1/2 like hub, but number conflict, or rather space route signal?
+  text (regex?) based filtering of platforms (like printf or regex, or wildcard? "Platform No %%" and then reads are summed?)
+  could add text field to name radar, then allow radar to read signals from named radars specifically?
+  
+--]]
 
-script.on_event(defines.events.on_gui_opened, function(event)
-	game.print(">>> on_gui_opened ".. event.player_index, prnt)
-	if (event.gui_type == defines.gui_type.entity and event.entity and event.entity.valid) then
-		local player = game.get_player(event.player_index)
-		close_custom_window(player, true)
-		if (event.entity.type == "rocket-silo") then
-			on_gui_silo(player, event)
-		end
-	end
-end)
-script.on_event(defines.events.on_gui_closed, function(event)
-	--game.print(">>> on_gui_closed")
-	if (event.gui_type == defines.gui_type.entity and event.entity and event.entity.valid) then
-		local player = game.get_player(event.player_index)
-		
-		local gui = player.gui.relative.hexcoder_silo_ctrl
-		if (gui) then gui.destroy() end
-	end
-end)
-
-function radar_gui_checked_changed(event)
-	local gui = game.get_player(event.player_index).gui.screen.hexcoder_entity_gui
-	local radar = get(gui.entity)
-	
-	if     (event.element.name == "radio1") then radar.read_plat_requests = event.element.state
-	elseif (event.element.name == "radio2") then radar.read_plat_location = event.element.state end
-end
-function radar_gui_selection_changed(event)
-	--if (event.element.name == "platform_drop_down") then
-		--local gui = game.get_player(event.player_index).gui.screen.hexcoder_entity_gui
-		--local radar = get(gui.entity)
-		--if (radar and radar.entity and radar.entity.valid and radar.entity.force) then
-		--	radar.selected_platform = gui.drop_down_platforms[event.element.selected_index]
-		--end
-	--end
-end
-
-local function radar_gui_update_platforms(gui, radar)
-	-- In theory this only needs to be updates once per tick, but each player can only have one gui open anyway
+local function radar_gui_update_platforms(gui, data)
+	-- In theory this only needs to be updated once per tick, but each player can only have one gui open anyway
 	-- duplicates work in multiplayer, but in theory players could each have different forces!
 	local drop_down_strings = {"[None]"}
 	local drop_down_platforms = {nil}
 	local counter = 2 -- next platform in list
 	local sel_idx = nil -- [None]
 	
-	local force = radar.entity and radar.entity.valid and radar.entity.force
+	local force = gui.entity and gui.entity.valid and gui.entity.force
 	if (force) then
 		for i, platf in pairs(force.platforms) do
 			--game.print(" > ".. i .."platform ".. platf.name)
@@ -79,7 +66,7 @@ local function radar_gui_update_platforms(gui, radar)
 			drop_down_platforms[counter] = platf
 			
 			-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
-			if (radar.selected_platform == platf) then
+			if (data.selected_platform == platf) then
 				sel_idx = counter
 			end
 			counter = counter+1
@@ -87,52 +74,50 @@ local function radar_gui_update_platforms(gui, radar)
 	end
 	
 	if (not sel_idx) then -- selected_platform not found, it could have been deleted
-		radar.selected_platform = nil
+		data.selected_platform = nil
 		sel_idx = 1 -- [None]
 	end
 	
-	local t = gui.tags
-	t.drop_down_platforms = drop_down_platforms
-	gui.tags = t
-	
-	gui.tags.ui.platform_drop_down.items = drop_down_strings
-	gui.tags.ui.platform_drop_down.selected_index = sel_idx
-end
-function radar_gui_update(gui, radar)
-	radar_gui_update_platforms(gui, radar)
-	
-	gui.tags.ui.mode1.state = radar.read_plat_requests
-	gui.tags.ui.mode2.state = radar.read_plat_location
+	gui.drop_down_platforms = drop_down_platforms
+	gui.refs.platform_drop_down.items = drop_down_strings
+	gui.refs.platform_drop_down.selected_index = sel_idx
 end
 
-script.on_event(defines.events.on_gui_checked_state_changed, radar_gui_checked_changed)
-script.on_event(defines.events.on_gui_selection_state_changed, radar_gui_selection_changed)
+local handlers = {}
 
-local function on_close_gui_button(event)
-	local player = game.get_player(event.player_index)
-	local window = player.gui.screen.hexcoder_entity_gui
-	if (window) then
-		-- we seemingly can't "consume" the E press when intending to close custom gui
-		-- So instead force close inventory that opens if just closed custom window
-		--player.opened = nil -- Doesn't work, Has E press not been processed yet?
-		
-		close_custom_window(player, true)
+function handlers.radar_checkbox(event)
+	local data = get(storage.open_guis[event.player_index].entity_id)
+	
+	if     (event.element.name == "mode1") then data.read_plat_requests = event.element.state
+	elseif (event.element.name == "mode2") then data.read_plat_location = event.element.state end
+	
+	--game.print("radar_checkbox ".. serpent.block(data))
+end
+function handlers.radar_drop_down(event)
+	local gui = storage.open_guis[event.player_index]
+	local data = get(gui.entity_id)
+	
+	if (event.element.name == "platform_drop_down") then
+		data.selected_platform = gui.drop_down_platforms[event.element.selected_index]
 	end
+	
+	game.print("radar_drop_down ".. serpent.block(data))
+end
+function handlers.entity_window_close_button(event)
+	-- need to call this on default_frame close button or else it will leave player.opened with invalid values
+	game.get_player(event.player_index).opened = nil
 end
 
-script.on_nth_tick(1, function(event)
-	close_invalid_gui()
+function radar_gui_update(gui, data)
+	radar_gui_update_platforms(gui, data)
 	
-	for _, open_gui in pairs(gui_state) do
-		local data = get(open_gui.entity)
-		radar_gui_update(open_gui, data)
-	end
-end)
-
---]]
+	gui.refs.mode1.state = data.read_plat_requests
+	gui.refs.mode2.state = data.read_plat_location
+end
 
 local function create_radar_gui(player, entity)
-	local window, ui_refs = glib.add(player.gui.screen, default_frame("hexcoder_radar_gui", "Radar Control"))
+	local window, refs = glib.add(player.gui.screen,
+		default_frame("hexcoder_radar_gui", "Radar Control", { button=handlers.entity_window_close_button }))
 	window.force_auto_center()
 	
 	-- TODO: cursor is not finger pointer on draggable titlebar like with built in guis?
@@ -149,7 +134,8 @@ local function create_radar_gui(player, entity)
 						args = {
 							type = "drop-down", name = "platform_drop_down", caption = "Mode",
 							items = {"[None]"}, selected_index = 1
-						}
+						},
+						_selection_state_changed = handlers.radar_drop_down
 					--},
 				},
 				{
@@ -162,28 +148,29 @@ local function create_radar_gui(player, entity)
 					--		args = {type = "radiobutton", name = "radio2", caption = "Radio 2",
 					--				state = data.mode == "read_platform"}
 					--	},
-						{args = {type = "checkbox", name = "mode1", caption = "Read Platform Request", state=false }},
-						{args = {type = "checkbox", name = "mode2", caption = "Read Platform Location", state=false }},
+						{args = {type = "checkbox", name = "mode1", caption = "Read Platform Requests", state=false }, _checked_state_changed = handlers.radar_checkbox },
+						{args = {type = "checkbox", name = "mode2", caption = "Read Platform Status", state=false }, _checked_state_changed = handlers.radar_checkbox },
 					}
 				}
 			}
 		--}
-	}, ui_refs)
+	}, refs)
 	
+	-- Store radar settings first time radar is opened, leave at default otherwise
+	local data = get(gui.entity_id)
+	if (not data) then
+		data = {
+			read_plat_requests = false,
+			read_plat_location = false,
+			selected_platform = nil
+		}
+		storage.data[gui.entity_id] = data
+	end
 	
-	-- store associated entity in ui
-	--local t = window.tags or {}
-	--t.entity_id = entity_id = script.register_on_object_destroyed(entity)
-	--t.entity_type = "radar"
-	--t.ui = ui_refs
-	--window.tags = t
+	local gui = { refs=refs, entity=entity, entity_id=script.register_on_object_destroyed(entity) }
+	storage.open_guis[player.index] = gui
 	
-	local id = script.register_on_object_destroyed(entity)
-	
-	-- Need to use storage despite having player.opened because player.opened.tags cannot store lua entity, only non-reversible id (?)
-	storage.open_guis[player.index] = { gui=window, entity=entity, entity_id=id }
-	
-	--radar_gui_update(player, entity)
+	radar_gui_update(gui, data)
 	
 	player.play_sound{ path="hexcoder-radar-open-sound" }
 	
@@ -219,12 +206,29 @@ script.on_event(defines.events.on_object_destroyed, function(event)
 		-- close open entity gui if entity destroyed
 		if (event.registration_number == gui.entity_id) then
 			game.get_player(player_i).opened = nil
-			storage.open_guis[player_i] = nil
+		end
+	end
+	
+	storage.data[event.registration_number] = nil
+end)
+
+-- reacting to LMB requires custom input(?)
+script.on_event("hexcoder_left_click", function(event)
+	local player = game.get_player(event.player_index)
+	local free_cursor = not (player.cursor_stack.valid_for_read or player.cursor_ghost or player.cursor_record)
+	local entity = player.selected -- hovered entity
+	local can_open_gui = free_cursor and entity and entity.valid and player.can_reach_entity(entity)
+	
+	if (can_open_gui) then
+		game.print(">>> on_entity_click ".. entity.name, prnt)
+		
+		if (is_radar(entity)) then
+			open_custom_entity_gui(player, entity)
 		end
 	end
 end)
+
 script.on_nth_tick(6, function(event)
-	--_reset()
 	for player_i, gui in pairs(storage.open_guis) do
 		local player = game.get_player(player_i)
 		-- close custom gui once out of reach
@@ -234,18 +238,38 @@ script.on_nth_tick(6, function(event)
 		end
 	end
 end)
+--script.on_nth_tick(defines.events.on_player_changed_position, function(event) -- Doesn't work?
+--	game.print(">>> on_player_changed_position ")
+--	
+--	local gui = storage.open_guis[event.player_index]
+--	if (gui) then
+--		-- close custom gui once out of reach
+--		local player = game.get_player(event.player_index)
+--		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
+--		if (not valid) then
+--			player.opened = nil
+--		end
+--	end
+--end)
 
--- reacting to LMB requires custom input(?)
-script.on_event("hexcoder_left_click", function(event)
-	local player = game.get_player(event.player_index)
-	local entity = player.selected -- hovered entity
-	local valid = entity and entity.valid and player.can_reach_entity(entity)
-	
-	if (valid) then
-		game.print(">>> on_entity_click ".. entity.name, prnt)
-		
-		if (entity.type == "radar" and entity.name == "radar") then
-			open_custom_entity_gui(player, entity)
-		end
-	end
+script.on_nth_tick(60, function(event)
+	--for _, player in pairs(game.players) do
+	--	game.print(">> cursor: ")
+	--	game.print(">>  cursor_stack: ".. serpent.block(player.cursor_stack))
+	--	game.print(">>  cursor_ghost: ".. serpent.block(player.cursor_ghost))
+	--	game.print(">>  cursor_record: ".. serpent.block(player.cursor_record))
+	--	game.print(">>  has_cursor: ".. (has_cursor and "true" or "false"))
+	--end
 end)
+
+glib.register_handlers(handlers)
+
+-- script_raised_teleported (machines can be moved by scripts using this?)
+-- on_entity_cloned (machines can be duplicated by scripts using this, ex. SE trains with space elevator and spaceships?)
+
+-- on_entity_settings_pasted
+-- keep settings on upgrade? (not relevant for me I suppose?)
+-- on_player_setup_blueprint ?
+
+-- on_player_flipped_entity
+-- on_player_rotated_entity
