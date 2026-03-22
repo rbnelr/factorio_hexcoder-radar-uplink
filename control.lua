@@ -13,7 +13,7 @@ local handlers = {}
 function _reset(event) -- allow me to fix outdates state during dev
 	storage.silos = nil
 	storage.data = nil
-	storage.open_guis = nil
+	--storage.open_guis = nil
 	for _, player in pairs(game.players) do player.opened = nil end
 	
 	init()
@@ -34,7 +34,6 @@ local function get_radar_data_or_init(entity)
 	if not data then
 		local reg_id, unit_num = script.register_on_object_destroyed(entity)
 		data = {
-			entity = entity,
 			read_plat_requests = false,
 			read_plat_location = false,
 			selected_platform = nil -- LuaSpacePlatform.index
@@ -66,6 +65,130 @@ more ideas:
   could add text field to name radar, then allow radar to read signals from named radars specifically?
   
 --]]
+
+-- iterate space platform hub logistic requests and compute remaining requests (items on the way are only counted once rocket is launched, i think)
+-- returns as table["<quality>"]["<item_name>"] = request_count_excluding_on_the_way
+local function compute_platform_requests(to_platform, from_planet)
+	-- Platform hub inventory (excludes hub_trash)
+	local inv = to_platform.hub.get_inventory(defines.inventory.hub_main)
+	-- Platform hub logistic points
+	-- for hubs we have 2: { requester, passive_provider }, iterate both to be safe
+	local logi = to_platform.hub.get_logistic_point()
+	local reqests = {}
+	
+	for _, lp in pairs(logi) do
+		
+		for _, sec in pairs(lp.sections) do
+			--game.print(" > sec: ".. serpent.block(sec.active))
+			if sec.active then
+				for _, fil in pairs(sec.filters) do
+					--game.print(" > fil: ".. serpent.block(fil))
+					-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
+					if fil and fil.import_from == from_planet
+						  and fil.min and fil.min > 0
+						  and fil.value and fil.value.type == "item" then
+						--game.print(" > ".. fil.value.name .." ".. fil.value.quality .." ".. fil.min)
+						
+						local q = reqests[fil.value.quality]
+						if not q then q = {}
+							reqests[fil.value.quality] = q
+						end
+						
+						local count = q[fil.value.name] or -inv.get_item_count({name=fil.value.name, quality=fil.value.quality})
+						q[fil.value.name] = count + fil.min
+					end
+				end
+			end
+		end
+		
+		-- items on the way
+		--game.print(" > targeted_items_deliver: ".. serpent.block(on_the_way))
+		for _, item in pairs(lp.targeted_items_deliver) do
+			local q = reqests[item.quality]
+			local i = q and q[item.name]
+			if i then
+				q[item.name] = i - item.count
+			end
+		end
+	end
+	return reqests
+end
+
+local function get_radar_output_signals(data, radar, platf)
+	local radar_planet = radar.surface.planet.prototype
+	local signals = {}
+	
+	if platf and platf.valid then
+		--game.print(">> radar ".. platf.name)
+		if data.read_plat_location then
+			-- signal space location that platform is orbiting
+			if platf.space_location then
+				table.insert(signals, { value={ type="space-location", name=platf.space_location.name, quality="normal" }, min=1 })
+			end
+			-- signal space connection platform travelling
+			-- since space connections are not supported as signals, output from/to space locations as signals with -1/-2 value
+			-- dont do 1/2 like platform hub, due to conflict with space_location, avoid using 2/3 to allow nauvis>0 as condition (use nauvis<0 to check if platform is leaving or arriving)
+			if platf.space_connection then
+				local from = platf.space_connection.from
+				local to = platf.space_connection.to
+				table.insert(signals, { value={ type="space-location", name=from.name, quality="normal" }, min=-1 })
+				table.insert(signals, { value={ type="space-location", name=to.name, quality="normal" }, min=-2 })
+			end
+		end
+		
+		-- output effective requests items
+		-- plus "info" signal to know if requests are active without checking space location
+		if data.read_plat_requests
+			  and platf.space_location == radar_planet
+			  and platf.hub and platf.hub.valid then
+			table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
+			
+			local effective_requests = compute_platform_requests(platf, radar_planet)
+			for quality, items in pairs(effective_requests) do
+				for item, count in pairs(items) do
+					if count > 0 then
+						table.insert(signals, { value={ type="item", name=item, quality=quality }, min=count })
+					end
+				end
+			end
+		end
+	end
+	
+	return signals
+end
+local function tick_radars()
+	for id, data in pairs(storage.data) do
+		local entity = game.get_entity_by_unit_number(id)
+		if entity and entity.valid then
+			--if data.circuit_cc then data.circuit_cc.destroy() end
+			--data.circuit_cc = nil
+			
+			if not data.circuit_cc then
+				data.circuit_cc = entity.surface.create_entity{
+					name="constant-combinator", force=entity.force,
+					position={entity.position.x - 2, entity.position.y},
+					direction = defines.direction.east
+				}
+			end
+			local platf = data.selected_platform and entity.force.platforms[data.selected_platform]
+			
+			local cc = data.circuit_cc.get_control_behavior()
+			cc.enabled = platf and platf.valid and entity.active and entity.energy > 0
+			if cc.enabled then
+				cc.sections[1].filters = get_radar_output_signals(data, entity, platf)
+			else
+				cc.sections[1].filters = {}
+			end
+			
+			--game.print(">> radar ".. id)
+			--game.print(">> entity: ".. serpent.block(entity))
+			--game.print(">> data: ".. serpent.block(data))
+			
+			--local circ1 = entity.get_circuit_network(defines.wire_type.red)
+		end
+	end
+end
+
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
 -- I think setting drop_down.items while it is open breaks it (?)
@@ -121,6 +244,9 @@ function handlers.radar_drop_down(event)
 	end
 	
 	game.print("radar_drop_down ".. serpent.block(data))
+	
+	-- TODO: call radar_gui_update_platforms? 
+	radar_gui_update_platforms()
 end
 function handlers.entity_window_close_button(event)
 	-- need to call this on default_frame close button or else it will leave player.opened with invalid values
@@ -159,14 +285,6 @@ local function create_radar_gui(player, entity)
 				},
 				{
 					args = {type = "flow", direction = "vertical"}, children = {
-					--	{
-					--		args = {type = "radiobutton", name = "radio1", caption = "Radio 1",
-					--				state = data.mode == "vanilla" }
-					--	},
-					--	{
-					--		args = {type = "radiobutton", name = "radio2", caption = "Radio 2",
-					--				state = data.mode == "read_platform"}
-					--	},
 						{args = {type = "checkbox", name = "mode1", caption = "Read Platform Requests", state=false }, _checked_state_changed = handlers.radar_checkbox },
 						{args = {type = "checkbox", name = "mode2", caption = "Read Platform Status", state=false }, _checked_state_changed = handlers.radar_checkbox },
 					}
@@ -178,7 +296,7 @@ local function create_radar_gui(player, entity)
 	local gui = { refs=refs, entity=entity }
 	storage.open_guis[player.index] = gui
 	
-	local data = get_radar_data_or_init(gui.entity)
+	local data = get_radar_data_or_init(entity)
 	radar_gui_update(gui, data)
 	
 	player.play_sound{ path="hexcoder-radar-open-sound" }
@@ -197,7 +315,7 @@ local function open_custom_entity_gui(player, entity)
 	player.opened = create_radar_gui(player, entity)
 end
 script.on_event(defines.events.on_gui_closed, function(event)
-	game.print("on_gui_closed", prnt)
+	--game.print("on_gui_closed", prnt)
 	if event.element and event.element.name == "hexcoder_radar_gui" then
 		local player = game.get_player(event.player_index)
 		
@@ -213,7 +331,7 @@ end)
 script.on_event(defines.events.on_object_destroyed, function(event)
 	for player_i, gui in pairs(storage.open_guis) do
 		-- close open entity gui if entity destroyed
-		if event.useful_id == gui.entity.unit_number then
+		if gui.entity and gui.entity.valid and event.useful_id == gui.entity.unit_number then
 			game.get_player(player_i).opened = nil
 		end
 	end
@@ -244,49 +362,26 @@ script.on_nth_tick(6, function(event)
 		end
 	end
 end)
---script.on_nth_tick(defines.events.on_player_changed_position, function(event) -- Doesn't work?
---	game.print(">>> on_player_changed_position ")
---	
---	local gui = storage.open_guis[event.player_index]
---	if gui then
---		-- close custom gui once out of reacha
---		local player = game.get_player(event.player_index)
---		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
---		if not valid then
---			player.opened = nil
---		end
---	end
---end)
 
-script.on_nth_tick(1, function(event)
-	--for _, player in pairs(game.players) do
-	--	game.print(">> cursor: ")
-	--	game.print(">>  cursor_stack: ".. serpent.block(player.cursor_stack))
-	--	game.print(">>  cursor_ghost: ".. serpent.block(player.cursor_ghost))
-	--	game.print(">>  cursor_record: ".. serpent.block(player.cursor_record))
-	--	game.print(">>  has_cursor: ".. (has_cursor and "true" or "false"))
-	--end
-	
-	--for player_i, gui in pairs(storage.open_guis) do
-	--	gui.entity.clone{position={x=gui.entity.position.x+5, y=gui.entity.position.y}}
-	--end
-	
-	--for id, data in pairs(storage.data) do
-	--	data.entity.
-	--end
-end)
-
--- only on_entity_cloned seems to work right now, event.tags is always nil?
+-- this now allows blueprint to copy custom settings, supports on_entity_cloned
+-- blueprinting over does not
+-- entities dying due to damage don't keep settings yet
+-- things being built due to undo redo don't work yet
 local function on_created_entity(event)
-	--game.print("on_created_entity (".. serpent.block(event) ..")")
-	--game.print(serpent.block(event.tags))
+	game.print("on_created_entity (".. serpent.block(event) ..")")
+	game.print(serpent.block(event.tags))
 	
 	local entity = event.entity or event.destination
 	
+	--if event.source then
+	--	storage.data[entity.unit_number] = util.table.deepcopy(storage.data[event.source.unit_number])
+	--elseif event.tags then
+	--	storage.data[entity.unit_number] = util.table.deepcopy(event.tags["hexcoder_radar_gui"])
+	--end
 	if event.source then
-		storage.data[entity.unit_number] = util.table.deepcopy(storage.data[event.source.unit_number])
+		storage.data[entity.unit_number] = storage.data[event.source.unit_number]
 	elseif event.tags then
-		storage.data[entity.unit_number] = util.table.deepcopy(event.tags["hexcoder_radar_gui"])
+		storage.data[entity.unit_number] = event.tags["hexcoder_radar_gui"]
 	end
 end
 for _, event in ipairs({
@@ -319,12 +414,13 @@ script.on_event(defines.events.on_player_setup_blueprint, function (event)
 			if is_radar(entity) then
 				game.print("entity.storage: ".. serpent.block(storage.data[entity.unit_number]))
 				
-				blueprint.set_blueprint_entity_tag(i, "hexcoder_radar_gui", util.table.deepcopy(storage.data[entity.unit_number]))
-				--local tags = entity.tags or {}
-				--tags["hexcoder_radar_gui"] = util.table.deepcopy(storage.data[entity.unit_number])
-				--entity.tags = tags
+				local tags = bp_entity.tags or {}
+				tags["hexcoder_radar_gui"] = storage.data[entity.unit_number]
+				bp_entity.tags = tags
+				-- need to modify name somehow if entity has custom name and and ghost version does not match somehow? (protocol_1903 [pY] on discord)
 				
-				game.print("entity.tags: ".. serpent.block(blueprint.get_blueprint_entity_tag(i, "hexcoder_radar_gui")))
+				--game.print("set tags to: ".. serpent.block(bp_entity.tags))
+				--game.print("set tags to: ".. serpent.block(blueprint.get_blueprint_entity_tag(i, "hexcoder_radar_gui")))
 				
 				changed = true
 			end
@@ -336,8 +432,28 @@ script.on_event(defines.events.on_player_setup_blueprint, function (event)
 end)
 
 -- doesn't get called for entities with no vanilla settings :(
+script.on_event(defines.events.on_pre_entity_settings_pasted, function(event)
+	game.print("on_pre_entity_settings_pasted")
+end)
 script.on_event(defines.events.on_entity_settings_pasted, function(event)
-	--game.print("on_entity_settings_pasted")
+	game.print("on_entity_settings_pasted")
+end)
+
+script.on_nth_tick(1, function(event)
+	
+	--for _, player in pairs(game.players) do
+	--	game.print(">> cursor: ")
+	--	game.print(">>  cursor_stack: ".. serpent.block(player.cursor_stack))
+	--	game.print(">>  cursor_ghost: ".. serpent.block(player.cursor_ghost))
+	--	game.print(">>  cursor_record: ".. serpent.block(player.cursor_record))
+	--	game.print(">>  has_cursor: ".. (has_cursor and "true" or "false"))
+	--end
+	
+	--for player_i, gui in pairs(storage.open_guis) do
+	--	gui.entity.clone{position={x=gui.entity.position.x+5, y=gui.entity.position.y}}
+	--end
+	
+	tick_radars()
 end)
 
 -- script_raised_teleported 
