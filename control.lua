@@ -34,9 +34,12 @@ local function get_radar_data_or_init(entity)
 	if not data then
 		local reg_id, unit_num = script.register_on_object_destroyed(entity)
 		data = {
-			read_plat_requests = false,
-			read_plat_location = false,
-			selected_platform = nil -- LuaSpacePlatform.index
+			settings = {
+				mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
+				read_plat_requests = true,
+				read_plat_location = true,
+				selected_platform = nil -- LuaSpacePlatform.index
+			}
 		}
 		storage.data[unit_num] = data
 	end
@@ -120,7 +123,7 @@ local function get_radar_output_signals(data, radar, platf)
 	
 	if platf and platf.valid then
 		--game.print(">> radar ".. platf.name)
-		if data.read_plat_location then
+		if data.settings.read_plat_location then
 			-- signal space location that platform is orbiting
 			if platf.space_location then
 				table.insert(signals, { value={ type="space-location", name=platf.space_location.name, quality="normal" }, min=1 })
@@ -138,7 +141,7 @@ local function get_radar_output_signals(data, radar, platf)
 		
 		-- output effective requests items
 		-- plus "info" signal to know if requests are active without checking space location
-		if data.read_plat_requests
+		if data.settings.read_plat_requests
 			  and platf.space_location == radar_planet
 			  and platf.hub and platf.hub.valid then
 			table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
@@ -156,6 +159,21 @@ local function get_radar_output_signals(data, radar, platf)
 	
 	return signals
 end
+local function create_circuit_proxy(data, entity)
+	if not data.circuit_cc then
+		data.circuit_cc = entity.surface.create_entity{
+			name="constant-combinator", force=entity.force,
+			position={entity.position.x - 2, entity.position.y},
+			direction=defines.direction.east
+		}
+	end
+end
+local function destroy_circuit_proxy(data)
+	if data.circuit_cc then
+		data.circuit_cc.destroy()
+		data.circuit_cc = nil
+	end
+end
 local function tick_radars()
 	for id, data in pairs(storage.data) do
 		local entity = game.get_entity_by_unit_number(id)
@@ -163,21 +181,27 @@ local function tick_radars()
 			--if data.circuit_cc then data.circuit_cc.destroy() end
 			--data.circuit_cc = nil
 			
-			if not data.circuit_cc then
-				data.circuit_cc = entity.surface.create_entity{
-					name="constant-combinator", force=entity.force,
-					position={entity.position.x - 2, entity.position.y},
-					direction = defines.direction.east
-				}
-			end
-			local platf = data.selected_platform and entity.force.platforms[data.selected_platform]
-			
-			local cc = data.circuit_cc.get_control_behavior()
-			cc.enabled = platf and platf.valid and entity.active and entity.energy > 0
-			if cc.enabled then
-				cc.sections[1].filters = get_radar_output_signals(data, entity, platf)
+			local custom_circuit_behavior = data.settings.mode ~= nil
+			if custom_circuit_behavior then
+				create_circuit_proxy(data, entity)
+				
+				local cc = data.circuit_cc.get_control_behavior()
+				local platf = data.settings.selected_platform and entity.force.platforms[data.settings.selected_platform]
+				
+				--game.print("enabled ".. serpent.block(cc.enabled))
+				--game.print("platf ".. serpent.block(platf))
+				--game.print("platf.valid ".. serpent.block(platf and platf.valid))
+				--game.print("entity.active ".. serpent.block(entity.active))
+				--game.print("entity.energy ".. serpent.block(entity.energy))
+				
+				cc.enabled = platf ~= nil and platf.valid and entity.active and entity.energy > 0
+				if cc.enabled then
+					cc.sections[1].filters = get_radar_output_signals(data, entity, platf)
+				else
+					cc.sections[1].filters = {}
+				end
 			else
-				cc.sections[1].filters = {}
+				destroy_circuit_proxy(data)
 			end
 			
 			--game.print(">> radar ".. id)
@@ -210,7 +234,7 @@ local function radar_gui_update_platforms(gui, data)
 			drop_down_platforms[counter] = platf.index
 			
 			-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
-			if data.selected_platform == platf.index then
+			if data.settings.selected_platform == platf.index then
 				sel_idx = counter
 			end
 			counter = counter+1
@@ -218,7 +242,7 @@ local function radar_gui_update_platforms(gui, data)
 	end
 	
 	if not sel_idx then -- selected_platform not found, it could have been deleted
-		data.selected_platform = nil
+		data.settings.selected_platform = nil
 		sel_idx = 1 -- [None]
 	end
 	
@@ -228,25 +252,32 @@ local function radar_gui_update_platforms(gui, data)
 end
 
 function handlers.radar_checkbox(event)
-	local data = get_entity_data(storage.open_guis[event.player_index].entity)
+	local gui = storage.open_guis[event.player_index]
+	local data = get_entity_data(gui.entity)
 	
-	if     event.element.name == "mode1" then data.read_plat_requests = event.element.state
-	elseif event.element.name == "mode2" then data.read_plat_location = event.element.state end
+	if     event.element.name == "mode1" then data.settings.mode = nil
+	elseif event.element.name == "mode2" then data.settings.mode = "platforms"
+	elseif event.element.name == "option1" then data.settings.read_plat_requests = event.element.state
+	elseif event.element.name == "option2" then data.settings.read_plat_location = event.element.state end
 	
-	--game.print("radar_checkbox ".. serpent.block(data))
+	gui.refs.mode1.state = data.settings.mode == nil
+	gui.refs.mode2.state = data.settings.mode == "platforms"
+	
+	gui.refs.vanilla_pane.visible = gui.refs.mode1.state
+	gui.refs.platforms_pane.visible = gui.refs.mode2.state
 end
 function handlers.radar_drop_down(event)
 	local gui = storage.open_guis[event.player_index]
 	local data = get_entity_data(gui.entity)
 	
 	if event.element.name == "platform_drop_down" then
-		data.selected_platform = gui.drop_down_platforms[event.element.selected_index]
+		data.settings.selected_platform = gui.drop_down_platforms[event.element.selected_index]
 	end
 	
 	game.print("radar_drop_down ".. serpent.block(data))
 	
 	-- TODO: call radar_gui_update_platforms? 
-	radar_gui_update_platforms()
+	radar_gui_update_platforms(gui, data)
 end
 function handlers.entity_window_close_button(event)
 	-- need to call this on default_frame close button or else it will leave player.opened with invalid values
@@ -256,41 +287,46 @@ end
 function radar_gui_update(gui, data)
 	radar_gui_update_platforms(gui, data)
 	
-	gui.refs.mode1.state = data.read_plat_requests
-	gui.refs.mode2.state = data.read_plat_location
+	gui.refs.mode1.state = data.settings.mode == nil
+	gui.refs.mode2.state = data.settings.mode == "platforms"
+	
+	gui.refs.option1.state = data.settings.read_plat_requests
+	gui.refs.option2.state = data.settings.read_plat_location
+	
+	gui.refs.vanilla_pane.visible = gui.refs.mode1.state
+	gui.refs.platforms_pane.visible = gui.refs.mode2.state
 end
 
 local function create_radar_gui(player, entity)
+	-- TODO: cursor is not finger pointer on draggable titlebar like with built in guis?
 	local window, refs = glib.add(player.gui.screen,
 		default_frame("hexcoder_radar_gui", "Radar Control", { button=handlers.entity_window_close_button }))
 	window.force_auto_center()
 	
-	-- TODO: cursor is not finger pointer on draggable titlebar like with built in guis?
-	glib.add(window, {
-		--args = {type = "frame", direction = "vertical", style = "inside_shallow_frame_with_padding"},
-		--style_mods = { size = {300, 100} }, children = {
-			args = {type = "flow", direction = "vertical"},-- style = "inside_shallow_frame_with_padding"},
-			--style_mods = { size = {200, 160} },
-			children = {
-				--{ args = {type = "label", caption = "Radar: ".. entity.backer_name or entity.name} },
-				--{ args = {type = "line"} },
-				{
-					--args = {type = "flow", direction = "vertical"}, children = {
-						args = {
-							type = "drop-down", name = "platform_drop_down", caption = "Mode",
-							items = {"[None]"}, selected_index = 1
-						},
-						_selection_state_changed = handlers.radar_drop_down
-					--},
-				},
-				{
-					args = {type = "flow", direction = "vertical"}, children = {
-						{args = {type = "checkbox", name = "mode1", caption = "Read Platform Requests", state=false }, _checked_state_changed = handlers.radar_checkbox },
-						{args = {type = "checkbox", name = "mode2", caption = "Read Platform Status", state=false }, _checked_state_changed = handlers.radar_checkbox },
-					}
-				}
-			}
-		--}
+	local frame, refs = glib.add(window, {
+		args={type = "flow", direction = "horizontal"},
+		style_mods = { maximal_width=420 },
+		children = {
+			{args={type = "frame", direction = "vertical", style = "inside_shallow_frame_with_padding"}, style_mods={right_margin=8}, children={
+				{args={type = "label", caption = "Radar circuit mode"}},
+				{args={type = "radiobutton", name = "mode1", caption = "Radars", state=true}, _checked_state_changed = handlers.radar_checkbox },
+				{args={type = "radiobutton", name = "mode2", caption = "Platforms", state=false}, _checked_state_changed = handlers.radar_checkbox },
+			}},
+			{args={type = "frame", direction = "vertical", name="vanilla_pane", style = "inside_shallow_frame_with_padding"}, children={
+				{args={type = "label", caption = "Vanilla behavior\nShares circuit signals with radars across surface"}, style_mods={single_line=false}},
+			}},
+			{args={type = "frame", direction = "vertical", name="platforms_pane", style = "inside_shallow_frame_with_padding"}, children={
+				{args={type = "flow", direction = "horizontal"}, children={
+					{args={type = "label", caption = "Platform"}, style_mods={margin={4, 5, 0, 0}} },
+					{args={type = "drop-down", name = "platform_drop_down", caption = "Mode", items = {""}, selected_index = 1 },
+					  _selection_state_changed = handlers.radar_drop_down }
+				}},
+				{args={type = "flow", direction = "vertical"}, children={
+					{args={type = "checkbox", name = "option1", caption = "Read platform requests", state=false}, _checked_state_changed = handlers.radar_checkbox },
+					{args={type = "checkbox", name = "option2", caption = "Read platform status", state=false}, _checked_state_changed = handlers.radar_checkbox },
+				}}
+			}},
+		}
 	}, refs)
 	
 	local gui = { refs=refs, entity=entity }
@@ -336,7 +372,11 @@ script.on_event(defines.events.on_object_destroyed, function(event)
 		end
 	end
 	
-	storage.data[event.useful_id] = nil
+	local data = storage.data[event.useful_id]
+	if data then
+		destroy_circuit_proxy(data)
+		storage.data[event.useful_id] = nil
+	end
 end)
 
 -- reacting to LMB requires custom input(?)
@@ -373,15 +413,10 @@ local function on_created_entity(event)
 	
 	local entity = event.entity or event.destination
 	
-	--if event.source then
-	--	storage.data[entity.unit_number] = util.table.deepcopy(storage.data[event.source.unit_number])
-	--elseif event.tags then
-	--	storage.data[entity.unit_number] = util.table.deepcopy(event.tags["hexcoder_radar_gui"])
-	--end
 	if event.source then
-		storage.data[entity.unit_number] = storage.data[event.source.unit_number]
+		get_radar_data_or_init(entity).settings = storage.data[event.source.unit_number]
 	elseif event.tags then
-		storage.data[entity.unit_number] = event.tags["hexcoder_radar_gui"]
+		get_radar_data_or_init(entity).settings = event.tags["hexcoder_radar_gui"]
 	end
 end
 for _, event in ipairs({
@@ -415,7 +450,7 @@ script.on_event(defines.events.on_player_setup_blueprint, function (event)
 				game.print("entity.storage: ".. serpent.block(storage.data[entity.unit_number]))
 				
 				local tags = bp_entity.tags or {}
-				tags["hexcoder_radar_gui"] = storage.data[entity.unit_number]
+				tags["hexcoder_radar_gui"] = storage.data[entity.unit_number].settings
 				bp_entity.tags = tags
 				-- need to modify name somehow if entity has custom name and and ghost version does not match somehow? (protocol_1903 [pY] on discord)
 				
