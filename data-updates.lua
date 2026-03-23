@@ -34,4 +34,31 @@ cc.activity_led_light = nil
 --cc.activity_led_light_offsets = nil
 cc.activity_led_sprites = nil
 
-data:extend({cc})
+
+local dc = util.table.deepcopy(data.raw["decider-combinator"]["decider-combinator"])
+dc.name = mod_name.."dc"
+dc.flags = {"not-on-map",
+"not-rotatable", "not-flammable", "not-repairable",
+"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
+"not-in-kill-statistics", "not-in-made-in",
+"not-selectable-in-game"
+}
+if not dbg then
+	dc.sprites = nil
+	dc.selection_box = {{0,0}, {0,0}}
+	table.insert(dc.flags, "hide-alt-info")
+end
+dc.minable = {minable=false, mining_time=999999}
+dc.corpse = nil
+dc.dying_explosion = nil
+dc.collision_box = nil
+dc.damaged_trigger_effect = nil
+dc.fast_replaceable_group = nil
+dc.open_sound = nil
+dc.close_sound = nil
+dc.activity_led_light = nil
+--dc.activity_led_light_offsets = nil
+dc.activity_led_sprites = nil
+
+
+data:extend({cc, dc})
