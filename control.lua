@@ -46,6 +46,21 @@ local function get_radar_data_or_init(entity)
 	return data
 end
 
+local function swap_non_radar_wire_connections(src, dst)
+	src = src.get_wire_connectors()
+	dst = dst.get_wire_connectors()
+	
+	for _, w in pairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
+		for _, c in pairs(src[w].connections) do
+			--game.print(" > ".. serpent.block(c))
+			if c.origin ~= defines.wire_origin.radars then
+				dst[w].connect_to(c.target, false, c.origin)
+				src[w].disconnect_from(c.target, c.origin)
+			end
+		end
+	end
+end
+
 --[[
 Ideas:
   Radar Control
@@ -160,16 +175,28 @@ local function get_radar_output_signals(data, radar, platf)
 	return signals
 end
 local function create_circuit_proxy(data, entity)
-	if not data.circuit_cc then
+	if not data.circuit_cc or not data.circuit_cc.valid then
 		data.circuit_cc = entity.surface.create_entity{
-			name="constant-combinator", force=entity.force,
-			position={entity.position.x - 2, entity.position.y},
-			direction=defines.direction.east
+			name="hexcoder-radar-gui-cc", force=entity.force,
+			position={entity.position.x-3, entity.position.y}, snap_to_grid=false
 		}
+		data.circuit_cc.destructible = false
+		
+		--local w = entity.get_wire_connectors()[defines.wire_connector_id.circuit_red].connections
+		--game.print("conn: ".. serpent.block(w))
+		swap_non_radar_wire_connections(entity, data.circuit_cc)
+		
+		
+		--local radar = entity.prototype
+		--game.print("sprits: ".. serpent.block(radar.circuit_connector.sprites))
+		--game.print("sprits: ".. serpent.block(radar.circuit_connector.sprites.connector_main))
 	end
 end
-local function destroy_circuit_proxy(data)
+local function destroy_circuit_proxy(data, entity)
 	if data.circuit_cc then
+		if entity then
+			swap_non_radar_wire_connections(data.circuit_cc, entity)
+		end
 		data.circuit_cc.destroy()
 		data.circuit_cc = nil
 	end
@@ -178,9 +205,6 @@ local function tick_radars()
 	for id, data in pairs(storage.data) do
 		local entity = game.get_entity_by_unit_number(id)
 		if entity and entity.valid then
-			--if data.circuit_cc then data.circuit_cc.destroy() end
-			--data.circuit_cc = nil
-			
 			local custom_circuit_behavior = data.settings.mode ~= nil
 			if custom_circuit_behavior then
 				create_circuit_proxy(data, entity)
@@ -201,7 +225,7 @@ local function tick_radars()
 					cc.sections[1].filters = {}
 				end
 			else
-				destroy_circuit_proxy(data)
+				destroy_circuit_proxy(data, entity)
 			end
 			
 			--game.print(">> radar ".. id)
@@ -284,7 +308,7 @@ function handlers.entity_window_close_button(event)
 	game.get_player(event.player_index).opened = nil
 end
 
-function radar_gui_update(gui, data)
+local function radar_gui_update(gui, data)
 	radar_gui_update_platforms(gui, data)
 	
 	gui.refs.mode1.state = data.settings.mode == nil
@@ -337,6 +361,30 @@ local function create_radar_gui(player, entity)
 	
 	player.play_sound{ path="hexcoder-radar-open-sound" }
 	
+	for _, w in pairs({
+			{t=defines.wire_connector_id.circuit_red  , col = { 1, .2, .2 }, offset={x=0, y=0}},
+			{t=defines.wire_connector_id.circuit_green, col = { .2, 1, .2 }, offset={x=.1, y=.1}},
+		}) do
+		local to_visit = entity.surface.find_entities_filtered{ type="radar" }
+		--local visited = {}
+		--local cur = entity
+		
+		for _, radar in pairs(to_visit) do
+			local conns = radar.get_wire_connectors()
+			conns = conns[w.t] and conns[w.t].connections or {}
+			game.print(">> conns: ".. serpent.block(conns))
+			for _, c in pairs(conns) do
+				if c.origin == defines.wire_origin.radars then
+					local from = { entity=radar, offset=offset }
+					local to = { entity=c.target.owner, offset=offset }
+					
+					rendering.draw_line{ from = from, to = to, color = w.col, width = 2, surface = entity.surface, time_to_live = 60*30 }
+					rendering.draw_line{ from = from, to = to, color = w.col, width = 2, surface = entity.surface, time_to_live = 60*30 }
+				end
+			end
+		end
+	end
+	
 	return window
 end
 
@@ -388,17 +436,6 @@ script.on_event("hexcoder_left_click", function(event)
 	if free_cursor then
 		if is_radar(entity) and player.can_reach_entity(entity) then
 			open_custom_entity_gui(player, entity)
-		end
-	end
-end)
-
-script.on_nth_tick(6, function(event)
-	for player_i, gui in pairs(storage.open_guis) do
-		local player = game.get_player(player_i)
-		-- close custom gui once out of reach
-		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
-		if not valid then
-			player.opened = nil
 		end
 	end
 end)
@@ -474,6 +511,16 @@ script.on_event(defines.events.on_entity_settings_pasted, function(event)
 	game.print("on_entity_settings_pasted")
 end)
 
+script.on_nth_tick(6, function(event)
+	for player_i, gui in pairs(storage.open_guis) do
+		local player = game.get_player(player_i)
+		-- close custom gui once out of reach
+		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
+		if not valid then
+			player.opened = nil
+		end
+	end
+end)
 script.on_nth_tick(1, function(event)
 	
 	--for _, player in pairs(game.players) do
