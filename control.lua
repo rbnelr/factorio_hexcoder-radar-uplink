@@ -27,11 +27,21 @@ local glib = require("__glib__/glib")
 local default_frame = require("__glib__/examples/default_frame")
 --local prnt = {sound=defines.print_sound.never}
 
+local function round(num)
+	return num >= 0 and math.floor(num + 0.5) or math.ceil(num - 0.5)
+end
+local function abs(num)
+	return num >= 0 and math.floor(num + 0.5) or math.ceil(num - 0.5)
+end
+local netR = {red=true, green=false}
+local netG = {red=false, green=true}
+
 function init(event)
 	storage.radars = {}
 	storage.platforms = {} 
 	storage.open_guis = {}
 	storage.polling_radars = {}
+	storage.polling_platforms = {}
 end
 
 local handlers = {}
@@ -65,221 +75,79 @@ local function get_radar(entity)
 	return storage.radars[entity.unit_number]
 end
 
--- to allow this mod to read platform data onto the circuit network wires, we want to stop the vanilla behavior of radars sharing circuit signals automatically
--- to do so we need to remove the hidden wire_origin.radar wire, which cannot be done from lua
--- It would be possible to make a copy of the radar prototype with connects_to_other_radars=false, and switch out the radars on demand
--- but alternatively I can implement it in lua via wire_origin.script
--- this costs performance on user interaction and may be brittle, but has the upside that I can later add the planned feature to send data in names channels
--- This O(N) or O(N^2) algo could be optimized into O(1) linked list add/remove operation!
-local function update_global_radar_channel_wires(surface)
-	local radars = surface.find_entities_filtered{ type="radar", name="radar" }
+local _prev_conn = nil
+local _prev_progress = nil
+local function update_platform_status(data)
+	local plat = data.platform
+	local ctrl = data.ccs[1].get_control_behavior()
 	
-	-- connect all radars of same channel in chain
-	for _, w in ipairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
-		local prev = nil
-		for _, radar in ipairs(radars) do
-			local data = get_radar(radar)
-			local channel = data and data.mode -- nil == global channel
-			
-			local con = radar.get_wire_connectors(true)[w] -- true: create connector: if no current connections, would otherwise return nil
-			-- disconnect all previous script connections, assuming that these are the ones we made in this function
-			-- this may break other mods! TODO: only disconnect radar-to-radar connections?
-			--con.disconnect_all(defines.wire_origin.script)
-			
-			for _, c in ipairs(con.connections) do
-				if c.origin == defines.wire_origin.script and c.target.owner.type == "radar" and c.target.owner.name == "radar" then
-					con.disconnect_from(c.target, defines.wire_origin.script)
-				end
+	local signals = {}
+	-- platform index
+	table.insert(signals, {value={type="virtual", name="signal-P", quality="normal"}, min=plat.index})
+	
+	-- signal space location that platform is orbiting
+	if plat.space_location then
+		table.insert(signals, {value={type="space-location", name=plat.space_location.name, quality="normal"}, min=1})
+		
+		storage.polling_platforms[data.platform.index] = nil
+	-- signal space connection platform travelling
+	-- since space connections are not supported as signals, output from/to space locations as signals with -1/-2 value
+	-- dont do 1/2 like platform hub, due to conflict with space_location, avoid using 2/3 to allow nauvis>0 as condition (use nauvis<0 to check if platform is leaving or arriving)
+	elseif plat.space_connection then
+		local conn = plat.space_connection
+		local from = conn.from
+		local to   = conn.to
+		local speed = plat.speed
+		local progress = plat.distance
+		--local reverse = speed and speed < 0.0 -- speed is never reported negative
+		local sched = plat.schedule
+		local sched_targ = sched and sched.records[sched.current].station
+		
+		local reverse = nil
+		
+		-- report travel direction based on prev and current progress
+		if _prev_conn == conn then
+			reverse = progress < _prev_progress
+		end
+		_prev_conn = conn
+		_prev_progress = progress
+		
+		--game.print(" > delta: ".. delta .." speed: ".. _speed .."reported: ".. speed .." fac: ".. (_speed / speed), p)
+		
+		table.insert(signals, {value={type="space-location", name=sched_targ, quality="normal"}, min=-10})
+		
+		if speed then
+			-- speed is per tick
+			speed = round(speed * 60.0)
+			table.insert(signals, {value={type="virtual", name="signal-V", quality="normal"}, min=speed})
+		end
+		
+		-- Only report connection and progress/dist when direction can be safely determined (don't output for one update tick)
+		if reverse ~= nil then
+			if reverse then
+				from = conn.to
+				to   = conn.from
+				progress = 1.0 - progress
 			end
 			
-			if channel == nil then
-				if prev then
-					con.connect_to(prev, false, defines.wire_origin.script)
-				end
-				prev = con
-			end
-		end
-	end
-end
-local function debug_vis_wires(surface, time_to_live)
-	local radars = surface.find_entities_filtered{ type="radar", name="radar" }
-	for _, w in ipairs({
-			{t=defines.wire_connector_id.circuit_red  , col = { 1, .2, .2 }, offset={x=0, y=0}},
-			{t=defines.wire_connector_id.circuit_green, col = { .2, 1, .2 }, offset={x=-.1, y=-.1}},
-		}) do
-		for _, radar in ipairs(radars) do
-			local con = radar.get_wire_connectors()
-			con = con[w.t] and con[w.t].connections or {}
-			--game.print(">> con: ".. serpent.block(con))
-			for _, c in ipairs(con) do
-				if c.origin == defines.wire_origin.script then
-					local from = { entity=radar, offset=w.offset }
-					local to = { entity=c.target.owner, offset=w.offset }
-					
-					rendering.draw_line{ from = from, to = to, color = w.col, width = 2, surface = surface, time_to_live = time_to_live }
-					rendering.draw_line{ from = from, to = to, color = w.col, width = 8, surface = surface, time_to_live = time_to_live, render_mode="chart" }
-				end
-			end
-		end
-	end
-end
-
--- there seems to be no event for scheduled_for_deletion, so lets just stay connected until it is deleted
-local function platform_valid(p)
-	-- platforms being built don't have a hub yet
-	return p and p.valid and p.hub and p.hub.valid
-end
-local function get_platform_or_init(platform)
-	if not platform_valid(platform) then return nil end
-	
-	local data = storage.platforms[platform.index]
-	if not data then
-		local reg_id, index = script.register_on_object_destroyed(platform)
-		
-		local ccs = {}
-		for i=1,3 do
-			ccs[i] = platform.surface.create_entity{
-				name="hexcoder_radar_circ_cc", force=platform.force,
-				position={platform.hub.position.x+i-2, platform.hub.position.y+3}, snap_to_grid=false,
-				direction=defines.direction.south
-			}
-			ccs[i].destructible = false
-		end
-		
-		ccs[1].get_control_behavior().sections[1].filters = {
-			{value={type="virtual", name="signal-P", quality="normal"}, min=platform.index},
-			{value={type="virtual", name="signal-A", quality="normal"}, min=1},
-		}
-		ccs[2].get_control_behavior().sections[1].filters = {
-			{value={type="virtual", name="signal-P", quality="normal"}, min=platform.index},
-			{value={type="virtual", name="signal-B", quality="normal"}, min=1},
-		}
-		ccs[3].get_control_behavior().sections[1].filters = {
-			{value={type="virtual", name="signal-P", quality="normal"}, min=platform.index},
-			{value={type="virtual", name="signal-C", quality="normal"}, min=1},
-		}
-		
-		data= { platform=platform, ccs=ccs }
-		storage.platforms[index] = data
-	end
-	return data
-end
-local function reset_platform(platform)
-	local data = storage.platforms[platform.index]
-	data.comb.destroy()
-	storage.platforms[entity.unit_number] = nil
-end
-
-local function update_radar_config(data)
-	data.plat = data.e.force.platforms[data.selected_platform]
-	local plat_data = get_platform_or_init(data.plat)
-	
-	local id = defines.wire_connector_id
-	local dc = data.comb.get_wire_connectors(true)
-	local in_R = dc[id.combinator_input_red]
-	local in_G = dc[id.combinator_input_green]
-	
-	local connected = plat_data and in_R.connection_count == 1
-		and in_R.connections[1].target.owner.surface == plat_data.platform.surface
-	if not connected then 
-		game.print("try reconnect! ".. serpent.line(in_R.connections))
-		
-		in_R.disconnect_all(defines.wire_origin.script)
-		in_G.disconnect_all(defines.wire_origin.script)
-		
-		if plat_data then
-			game.print("reconnect! ")
+			table.insert(signals, {value={type="space-location", name=from.name, quality="normal"}, min=-1})
+			table.insert(signals, {value={type="space-location", name=  to.name, quality="normal"}, min=-2})
 			
-			local a = plat_data.ccs[1].get_wire_connectors(true)
-			local b = plat_data.ccs[2].get_wire_connectors(true)
-			local c = plat_data.ccs[3].get_wire_connectors(true)
-			in_R.connect_to(a[id.circuit_red], false, defines.wire_origin.script)
-			in_G.connect_to(b[id.circuit_green], false, defines.wire_origin.script)
-			in_G.connect_to(c[id.circuit_green], false, defines.wire_origin.script)
+			if progress then
+				-- distance is in [0,1]
+				local percent = round(progress * 100.0)
+				local dist_km = round(progress * conn.length)
+				table.insert(signals, {value={type="virtual", name="signal-T", quality="normal"}, min=percent})
+				table.insert(signals, {value={type="virtual", name="signal-D", quality="normal"}, min=dist_km})
+			end
 		end
 		
-		connected = true
+		-- in transit, update in real time
+		storage.polling_platforms[data.platform.index] = true
 	end
 	
-	if not connected then
-		storage.polling_radars[data.e.unit_number] = true
-		return
-	end
-	storage.polling_radars[data.e.unit_number] = nil
+	ctrl.sections[1].filters = signals
 end
-
-local function copy_settings(dst, src)
-	if not dst then dst = {} end
-	dst.mode = src.mode
-	dst.read_plat_requests = src.read_plat_requests
-	dst.read_plat_status = src.read_plat_status
-	dst.selected_platform = src.selected_platform
-	return dst
-end
-local function get_radar_or_init(entity, init_settings)
-	local data = get_radar(entity)
-	if not data then
-		local reg_id, unit_num = script.register_on_object_destroyed(entity)
-		data = {
-			e = entity,
-			plat = nil,
-			-- settings
-			mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
-			read_plat_requests = true,
-			read_plat_status = true,
-			selected_platform = nil, -- LuaSpacePlatform.index
-		}
-		if init_settings then
-			copy_settings(data, init_settings)
-		end
-		
-		data.comb = entity.surface.create_entity{
-			name="hexcoder_radar_circ_dc", force=entity.force,
-			position={entity.position.x-2, entity.position.y+0.5}, snap_to_grid=false,
-			direction=defines.direction.south
-		}
-		data.comb.destructible = false
-		
-		local id = defines.wire_connector_id
-		local r = entity.get_wire_connectors(true)
-		local c = data.comb.get_wire_connectors(true)
-		r[id.circuit_red  ].connect_to(c[id.combinator_output_red  ], false, defines.wire_origin.player)
-		r[id.circuit_green].connect_to(c[id.combinator_output_green], false, defines.wire_origin.player)
-		
-		local ctrl = data.comb.get_control_behavior()
-		ctrl.set_condition(1, {first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">="})
-		ctrl.set_output(1, {signal={type="virtual", name="signal-each"}, copy_count_from_input=true,
-			networks={red=true, green=true}})
-		
-		storage.radars[unit_num] = data
-	end
-	update_radar_config(data)
-	return data
-end
-local function reset_radar(entity)
-	local data = storage.radars[entity.unit_number]
-	data.comb.destroy()
-	storage.radars[entity.unit_number] = nil
-end
-
-script.on_event(defines.events.on_space_platform_changed_state, function (event)
-	game.print("on_space_platform_changed_state: platf ".. event.platform.index .." new_state: ".. serpent.line(event.platform.state))
-	
-	--if event.platform.scheduled_for_deletion ~= 0 then
-	--	for id,radar in pairs(storage.radars) do
-	--		if radar.selected_platform == event.platform.index then
-	--			radar.selected_platform = nil
-	--			update_radar_config(radar)
-	--		end
-	--	end
-	--	
-	--	local data = storage.platforms[event.platform.index]
-	--	if data then
-	--		reset_platform(event.platform)
-	--	end
-	--end
-end)
-
 --[[
 -- iterate space platform hub logistic requests and compute remaining requests (items on the way are only counted once rocket is launched, i think)
 -- returns as table["<quality>"]["<item_name>"] = request_count_excluding_on_the_way
@@ -339,7 +207,39 @@ for quality, items in pairs(effective_requests) do
 	end
 end
 ]]
-local function write_platform_request_signals(platform, signals)
+local function update_platform_requests_at_planet(data)
+	local plat = data.platform
+	--if not plat.space_location then return end
+	
+	local ctrl = data.ccs[2].get_control_behavior()
+	
+	local signals = {}
+	table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
+	
+	-- Platform main hub inventory (trash slots are hub_trash)
+	local inv = plat.hub.get_inventory(defines.inventory.hub_main)
+	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
+	local logi = plat.hub.get_logistic_point()[1] -- access directly to avoid iteration
+	
+	if logi.filters then
+		game.print(">> filters: ")
+		
+		-- this already filters by "import from" planet
+		for _, fil in ipairs(logi.filters) do
+			game.print(" > ".. serpent.line(fil))
+			-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
+			if fil.count > 0 then -- type==nil, probably because hub requests have to be items
+				table.insert(signals, {
+					value = { type="item", name=fil.name, quality=fil.quality },
+					min = fil.count
+				})
+			end
+		end
+	end
+	
+	ctrl.sections[1].filters = signals
+end
+local function _update_platform_requests(platform)
 	signals[3] = { value={ type="virtual", name="signal-info", quality="normal" }, min=1 }
 	local slot = 4
 	
@@ -406,72 +306,268 @@ local function write_platform_request_signals(platform, signals)
 	end
 end
 
--- on_space_platform_changed_state 
--- on_cargo_pod_delivered_cargo 
-
-local function write_radar_output_signals(data, radar, plat, signal_memo)
-	local radar_planet = radar.surface.planet.prototype
+-- to allow this mod to read platform data onto the circuit network wires, we want to stop the vanilla behavior of radars sharing circuit signals automatically
+-- to do so we need to remove the hidden wire_origin.radar wire, which cannot be done from lua
+-- It would be possible to make a copy of the radar prototype with connects_to_other_radars=false, and switch out the radars on demand
+-- but alternatively I can implement it in lua via wire_origin.script
+-- this costs performance on user interaction and may be brittle, but has the upside that I can later add the planned feature to send data in names channels
+-- This O(N) or O(N^2) algo could be optimized into O(1) linked list add/remove operation!
+local function update_global_radar_channel_wires(surface)
+	local radars = surface.find_entities_filtered{ type="radar", name="radar" }
 	
-	--game.print(">> radar ".. plat.name)
-	
-	signals = data.data or {}
-	
-	signals[1] = nil
-	signals[2] = nil
-	
-	if data.read_plat_status then
-		
-		-- signal space location that platform is orbiting
-		if plat.space_location then
-			signals[1] = { value={type="space-location", name=plat.space_location.name, quality="normal"}, min=1 }
-		else
+	-- connect all radars of same channel in chain
+	for _, w in ipairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
+		local prev = nil
+		for _, radar in ipairs(radars) do
+			local data = get_radar(radar)
+			local channel = data and data.mode -- nil == global channel
 			
-		end
-		-- signal space connection platform travelling
-		-- since space connections are not supported as signals, output from/to space locations as signals with -1/-2 value
-		-- dont do 1/2 like platform hub, due to conflict with space_location, avoid using 2/3 to allow nauvis>0 as condition (use nauvis<0 to check if platform is leaving or arriving)
-		if plat.space_connection then
-			local from = plat.space_connection.from
-			local to = plat.space_connection.to
-			signals[1] = { value={type="space-location", name=from.name, quality="normal"}, min=-1 }
-			signals[2] = { value={type="space-location", name=  to.name, quality="normal"}, min=-2 }
+			local con = radar.get_wire_connectors(true)[w] -- true: create connector: if no current connections, would otherwise return nil
+			-- disconnect all previous script connections, assuming that these are the ones we made in this function
+			-- this may break other mods! TODO: only disconnect radar-to-radar connections?
+			--con.disconnect_all(defines.wire_origin.script)
+			
+			for _, c in ipairs(con.connections) do
+				if c.origin == defines.wire_origin.script and c.target.owner.type == "radar" and c.target.owner.name == "radar" then
+					con.disconnect_from(c.target, defines.wire_origin.script)
+				end
+			end
+			
+			if channel == nil then
+				if prev then
+					con.connect_to(prev, false, defines.wire_origin.script)
+				end
+				prev = con
+			end
 		end
 	end
-	
-	-- output effective requests items
-	-- plus "info" signal to know if requests are active without checking space location
-	if data.read_plat_requests and plat.space_location == radar_planet and plat.hub and plat.hub.valid then
-		write_platform_request_signals(plat, signals)
-	end
-	
-	return signals
 end
-local function tick_radars()
-	-- memoize for platform signals since getting them is expensive, this way duplicate many radars reading one platform have constant cost
-	-- note that platform can only be at one planet at once
-	local signal_memo = {}
-	
-	for id, data in pairs(storage.radars) do
-		--game.print(" > ".. id ..": ".. serpent.block(data))
-		
-		local entity = data.e
-		--local ctrl = data.ctrl
-		--if data.mode then
-		--	local plat = data.plat
-		--	
-		--	local active = plat ~= nil and plat.valid and entity.active and entity.energy > 0
-		--	if active then
-		--		--ctrl.sections[1].filters = write_radar_output_signals(data, entity, plat, signal_memo)
-		--	end
-		--	ctrl.enabled = active
-		--else
-		--	ctrl.enabled = false
-		--end
+local function debug_vis_wires(surface, time_to_live)
+	local function _vis(entities)
+		for _, w in ipairs({
+			{t=defines.wire_connector_id.circuit_red  , col = { 1, .2, .2 }, offset={x=0, y=0}},
+			{t=defines.wire_connector_id.circuit_green, col = { .2, 1, .2 }, offset={x=-.1, y=-.1}},
+		}) do
+			for _, e in ipairs(entities) do
+				local con = e.get_wire_connectors()
+				con = con[w.t] and con[w.t].connections or {}
+				--game.print(">> con: ".. serpent.block(con))
+				for _, c in ipairs(con) do
+					if c.origin == defines.wire_origin.script then
+						local from = { entity=e, offset=w.offset }
+						local to = { entity=c.target.owner, offset=w.offset }
+						if from.entity.surface ~= surface then from = { position=from.entity.position, offset=w.offset } end
+						if   to.entity.surface ~= surface then   to = { position=  to.entity.position, offset=w.offset } end
+						
+						rendering.draw_line{ from = from, to = to, color = w.col, width = 2, surface = surface, time_to_live = time_to_live }
+						rendering.draw_line{ from = from, to = to, color = w.col, width = 8, surface = surface, time_to_live = time_to_live, render_mode="chart" }
+					end
+				end
+			end
+		end
 	end
+	
+	_vis(surface.find_entities_filtered{ name="radar" })
+	_vis(surface.find_entities_filtered{ name="hexcoder_radar_circ_cc" })
+	_vis(surface.find_entities_filtered{ name="hexcoder_radar_circ_dc" })
+end
+
+-- there seems to be no event for scheduled_for_deletion, so lets just stay connected until it is deleted
+local function platform_valid(p)
+	-- platforms being built don't have a hub yet
+	return p and p.valid and p.hub and p.hub.valid
+end
+local function get_platform_or_init(platform)
+	if not platform_valid(platform) then return nil end
+	
+	local data = storage.platforms[platform.index]
+	if not data then
+		local reg_id, index = script.register_on_object_destroyed(platform)
+		
+		local ccs = {}
+		for i=1,4 do
+			ccs[i] = platform.surface.create_entity{
+				name="hexcoder_radar_circ_cc", force=platform.force,
+				position={platform.hub.position.x+i-2, platform.hub.position.y+3}, snap_to_grid=false,
+				direction=defines.direction.south
+			}
+			ccs[i].destructible = false
+		end
+		
+		--ccs[1].get_control_behavior().sections[1].filters = {
+		--	{value={type="virtual", name="signal-P", quality="normal"}, min=platform.index},
+		--	{value={type="virtual", name="signal-A", quality="normal"}, min=1},
+		--}
+		--ccs[2].get_control_behavior().sections[1].filters = {
+		--	{value={type="virtual", name="signal-P", quality="normal"}, min=platform.index},
+		--	{value={type="virtual", name="signal-B", quality="normal"}, min=1},
+		--}
+		--ccs[3].get_control_behavior().sections[1].filters = {
+		--	{value={type="virtual", name="signal-P", quality="normal"}, min=platform.index},
+		--	{value={type="virtual", name="signal-C", quality="normal"}, min=1},
+		--}
+		
+		data= { platform=platform, ccs=ccs }
+		storage.platforms[index] = data
+		
+		update_platform_status(data)
+		update_platform_requests_at_planet(data)
+	end
+	return data
+end
+local function reset_platform(platform)
+	local data = storage.platforms[platform.index]
+	for _,v in ipairs(data.ccs) do
+		v.destroy()
+	end
+	storage.platforms[entity.unit_number] = nil
+end
+
+local function update_radar_config(data)
+	data.plat = data.e.force.platforms[data.selected_platform]
+	local plat_data = get_platform_or_init(data.plat)
+	
+	local id = defines.wire_connector_id
+	local dcStat = data.dcs[1].get_wire_connectors(true)
+	local dcReq = data.dcs[2].get_wire_connectors(true)
+	local dcStatR = dcStat[id.combinator_input_red]
+	
+	local connected = plat_data and dcStatR.connection_count == 1
+		and dcStatR.connections[1].target.owner.surface == plat_data.platform.surface
+	if not connected then 
+		dcStat[id.combinator_input_red  ].disconnect_all(defines.wire_origin.script)
+		dcStat[id.combinator_input_green].disconnect_all(defines.wire_origin.script)
+		dcReq[id.combinator_input_red  ].disconnect_all(defines.wire_origin.script)
+		dcReq[id.combinator_input_green].disconnect_all(defines.wire_origin.script)
+		
+		if plat_data then
+			game.print("reconnect!")
+			
+			local ccStat = plat_data.ccs[1].get_wire_connectors(true)
+			local ccReq = plat_data.ccs[2].get_wire_connectors(true)
+			--local c = plat_data.ccs[3].get_wire_connectors(true)
+			
+			-- platform status to platform status on red wire
+			dcStatR.connect_to(ccStat[id.circuit_red], false, defines.wire_origin.script)
+			
+			-- platform raw requests to request on red wire
+			-- platform status to requests on green wire for planet check
+			dcReq[id.combinator_input_red  ].connect_to(ccReq [id.circuit_red  ], false, defines.wire_origin.script)
+			dcReq[id.combinator_input_green].connect_to(ccStat[id.circuit_green], false, defines.wire_origin.script)
+		end
+		
+		connected = true
+	end
+	
+	if not connected then
+		storage.polling_radars[data.e.unit_number] = true
+		return
+	end
+	storage.polling_radars[data.e.unit_number] = nil
+end
+
+local function copy_settings(dst, src)
+	if not dst then dst = {} end
+	dst.mode = src.mode
+	dst.read_plat_requests = src.read_plat_requests
+	dst.read_plat_status = src.read_plat_status
+	dst.selected_platform = src.selected_platform
+	return dst
+end
+local function get_radar_or_init(entity, init_settings)
+	local data = get_radar(entity)
+	if not data then
+		local reg_id, unit_num = script.register_on_object_destroyed(entity)
+		data = {
+			e = entity,
+			plat = nil,
+			-- settings
+			mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
+			read_plat_requests = true,
+			read_plat_status = true,
+			selected_platform = nil, -- LuaSpacePlatform.index
+		}
+		if init_settings then
+			copy_settings(data, init_settings)
+		end
+		
+		local id = defines.wire_connector_id
+		local r = entity.get_wire_connectors(true)
+		
+		local planet = {type="space-location", name=entity.surface.planet.prototype.name}
+		
+		data.dcs = {}
+		for i=1,2 do
+			data.dcs[i] = entity.surface.create_entity{
+				name="hexcoder_radar_circ_dc", force=entity.force,
+				position={entity.position.x+i-2, entity.position.y+0.5}, snap_to_grid=false,
+				direction=defines.direction.south
+			}
+			data.dcs[i].destructible = false
+		end
+		
+		local params = {
+			{conditions={
+				{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">=", compare_type="and", first_signal_networks=netR}
+			},outputs={
+				{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
+			}},
+			
+			{conditions={
+				{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
+				{first_signal=planet, constant=0, comparator=">", first_signal_networks=netG},
+			},outputs={
+				{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
+			}},
+		}
+		for i=1,2 do
+			local combinator = data.dcs[i]
+			local con = combinator.get_wire_connectors()
+			r[id.circuit_red  ].connect_to(con[id.combinator_output_red  ], false, defines.wire_origin.player)
+			r[id.circuit_green].connect_to(con[id.combinator_output_green], false, defines.wire_origin.player)
+			
+			combinator.get_control_behavior().parameters = params[i]
+		end
+		
+		storage.radars[unit_num] = data
+	end
+	update_radar_config(data)
+	return data
+end
+local function reset_radar(entity)
+	local data = storage.radars[entity.unit_number]
+	for _,v in ipairs(data.dcs) do
+		v.destroy()
+	end
+	storage.radars[entity.unit_number] = nil
 end
 
 --on_entity_logistic_slot_changed 
 
+script.on_event(defines.events.on_space_platform_changed_state, function (event)
+	game.print("on_space_platform_changed_state: platf ".. event.platform.index .." new_state: ".. serpent.line(event.platform.state))
+	
+	local data = storage.platforms[event.platform.index]
+	if data then
+		update_platform_status(data)
+		
+		if event.platform.state == defines.space_platform_state.waiting_at_station then
+			update_platform_requests_at_planet(data)
+		end
+	end
+end)
+script.on_event(defines.events.on_entity_logistic_slot_changed, function (event)
+	local entity = event.entity
+	if entity.type == "space-platform-hub" then
+		local platform = entity.surface and entity.surface.platform
+		if platform then
+			local data = storage.platforms[platform.index]
+			if data then
+				update_platform_requests_at_planet(data)
+			end
+		end
+	end
+end)
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
 -- I think setting drop_down.items while it is open breaks it (?)
@@ -753,14 +849,15 @@ script.on_nth_tick(6, function(event)
 		end
 	end
 	
-	for id,v in pairs(storage.polling_radars) do
-		local data = storage.radars[id]
-		if data then
-			update_radar_config(data)
-		end
+	for id,_ in pairs(storage.polling_radars) do
+		update_radar_config(storage.radars[id])
 	end
 	
-	tick_radars()
+	for id,_ in pairs(storage.polling_platforms) do
+		update_platform_status(storage.platforms[id])
+	end
+	
+	--tick_radars()
 end)
 
 commands.add_command("hexcoder_radar_circ_vis", nil, function(command)
