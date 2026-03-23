@@ -8,7 +8,7 @@ Ideas:
   
   -> Limit so platform status is known, but no cross planet communicaion and only with orbiting platforms?
    -> though arguably why even limit it like this? only use might be less spoiling of gleba science if made intelligent.
-    -> simply add a "universal platform comms" and "universal named comms" settings options
+    -> simply add a "universal platform comms" and "universal named comms" set options
   Note that right now radars can read platforms, but platforms cannot read surface, is that wrong?
    -> either for radars in space read default surface radar circuit / named radars
    -> or instead avoid requiring radars on platform and make platform itself have these options
@@ -39,34 +39,23 @@ function _reset(event) -- allow me to fix outdated state during dev
 	--storage.open_guis = nil
 	for _, player in pairs(game.players) do player.opened = nil end
 	
+	for _, s in pairs(game.surfaces) do
+		for _, cc in pairs(s.find_entities_filtered{ type="constant-combinator", name="hexcoder_radar_circ_cc" }) do
+			cc.destroy()
+		end
+	end
+	
 	init()
 end
 script.on_init(function(event)
 	init()
 end)
 
-local function get_entity_data(entity)
-	return storage.data[entity.unit_number]
-end
-
 local function is_radar(entity)
 	return entity and entity.valid and entity.type == "radar" and entity.name == "radar"
 end
-local function get_radar_data_or_init(entity)
-	local data = get_entity_data(entity)
-	if not data then
-		local reg_id, unit_num = script.register_on_object_destroyed(entity)
-		data = {
-			settings = {
-				mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
-				read_plat_requests = true,
-				read_plat_status = true,
-				selected_platform = nil -- LuaSpacePlatform.index
-			}
-		}
-		storage.data[unit_num] = data
-	end
-	return data
+local function get_entity_data(entity)
+	return storage.data[entity.unit_number]
 end
 
 -- to allow this mod to read platform data onto the circuit network wires, we want to stop the vanilla behavior of radars sharing circuit signals automatically
@@ -74,44 +63,48 @@ end
 -- It would be possible to make a copy of the radar prototype with connects_to_other_radars=false, and switch out the radars on demand
 -- but alternatively I can implement it in lua via wire_origin.script
 -- this costs performance on user interaction and may be brittle, but has the upside that I can later add the planned feature to send data in names channels
+-- This O(N) or O(N^2) algo could be optimized into O(1) linked list add/remove operation!
 local function update_global_radar_channel_wires(surface)
 	local radars = surface.find_entities_filtered{ type="radar", name="radar" }
 	
 	-- connect all radars of same channel in chain
-	for _, w in pairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
+	for _, w in ipairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
 		local prev = nil
-		for _, radar in pairs(radars) do
-			local channel = nil -- nil == global channel
+		for _, radar in ipairs(radars) do
 			local data = get_entity_data(radar)
-			if data then
-				channel = data.settings.mode
-			end
+			local channel = data and data.mode -- nil == global channel
 			
-			local conns = radar.get_wire_connectors(true)[w] -- true: create connector: if no current connections, would otherwise return nil
+			local con = radar.get_wire_connectors(true)[w] -- true: create connector: if no current connections, would otherwise return nil
 			-- disconnect all previous script connections, assuming that these are the ones we made in this function
 			-- this may break other mods! TODO: only disconnect radar-to-radar connections?
-			conns.disconnect_all(defines.wire_origin.script)
+			--con.disconnect_all(defines.wire_origin.script)
+			
+			for _, c in ipairs(con.connections) do
+				if c.origin == defines.wire_origin.script and c.target.owner.type == "radar" and c.target.owner.name == "radar" then
+					con.disconnect_from(c.target, defines.wire_origin.script)
+				end
+			end
 			
 			if channel == nil then
 				if prev then
-					conns.connect_to(prev, false, defines.wire_origin.script)
+					con.connect_to(prev, false, defines.wire_origin.script)
 				end
-				prev = conns
+				prev = con
 			end
 		end
 	end
 end
 local function debug_vis_wires(surface, time_to_live)
 	local radars = surface.find_entities_filtered{ type="radar", name="radar" }
-	for _, w in pairs({
+	for _, w in ipairs({
 			{t=defines.wire_connector_id.circuit_red  , col = { 1, .2, .2 }, offset={x=0, y=0}},
 			{t=defines.wire_connector_id.circuit_green, col = { .2, 1, .2 }, offset={x=-.1, y=-.1}},
 		}) do
-		for _, radar in pairs(radars) do
-			local conns = radar.get_wire_connectors()
-			conns = conns[w.t] and conns[w.t].connections or {}
-			--game.print(">> conns: ".. serpent.block(conns))
-			for _, c in pairs(conns) do
+		for _, radar in ipairs(radars) do
+			local con = radar.get_wire_connectors()
+			con = con[w.t] and con[w.t].connections or {}
+			--game.print(">> con: ".. serpent.block(con))
+			for _, c in ipairs(con) do
 				if c.origin == defines.wire_origin.script then
 					local from = { entity=radar, offset=w.offset }
 					local to = { entity=c.target.owner, offset=w.offset }
@@ -123,39 +116,64 @@ local function debug_vis_wires(surface, time_to_live)
 		end
 	end
 end
-commands.add_command("hexcoder_radar_circ_vis", nil, function(command)
-	-- debug: visualize connections
-	for _, p in pairs(game.players) do
-		debug_vis_wires(p.surface, 60*10)
-	end
-end)
 
-local function create_cc(data, entity)
-	if not data.circuit_cc or not data.circuit_cc.valid then
-		data.circuit_cc = entity.surface.create_entity{
-			name="hexcoder_radar_circ_cc", force=entity.force,
-			position={entity.position.x-2, entity.position.y}, snap_to_grid=false
+local function create_cc(entity)
+	local circuit_cc = entity.surface.create_entity{
+		name="hexcoder_radar_circ_cc", force=entity.force,
+		position={entity.position.x-2, entity.position.y}, snap_to_grid=false
+	}
+	circuit_cc.destructible = false
+	
+	local a = entity.get_wire_connectors(true)
+	local b = circuit_cc.get_wire_connectors(true)
+	for _, w in ipairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
+		a[w].connect_to(b[w], false, defines.wire_origin.script)
+	end
+	
+	return circuit_cc
+end
+
+local function copy_settings(dst, src)
+	if not dst then dst = {} end
+	dst.mode = src.mode
+	dst.read_plat_requests = src.read_plat_requests
+	dst.read_plat_status = src.read_plat_status
+	dst.selected_platform = src.selected_platform
+	return dst
+end
+local function get_radar_data_or_init(entity, init_settings)
+	local data = get_entity_data(entity)
+	if not data then
+		local reg_id, unit_num = script.register_on_object_destroyed(entity)
+		local circuit_cc = create_cc(entity)
+		data = {
+			-- settings
+			mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
+			read_plat_requests = true,
+			read_plat_status = true,
+			selected_platform = nil, -- LuaSpacePlatform.index
+			--
 		}
-		data.circuit_cc.destructible = false
-		
-		update_global_radar_channel_wires(entity.surface)
-		for _, w in pairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
-			local src = entity.get_wire_connectors(true)[w]
-			local dst = data.circuit_cc.get_wire_connectors(true)[w]
-			src.connect_to(dst, false, defines.wire_origin.player)
+		if init_settings then
+			copy_settings(data, init_settings)
 		end
+		
+		data.e = entity
+		data.cc = circuit_cc
+		-- cached values for performance
+		data.ctrl = circuit_cc.get_control_behavior()
+		data.plat = data.e.force.platforms[data.selected_platform]
+		
+		storage.data[unit_num] = data
 	end
-end
-local function destroy_cc(data)
-	if data.circuit_cc then
-		data.circuit_cc.destroy()
-		data.circuit_cc = nil
-	end
+	return data
 end
 
+--[[
 -- iterate space platform hub logistic requests and compute remaining requests (items on the way are only counted once rocket is launched, i think)
 -- returns as table["<quality>"]["<item_name>"] = request_count_excluding_on_the_way
 local function compute_platform_requests(to_platform, from_planet)
+
 	-- Platform hub inventory (excludes hub_trash)
 	local inv = to_platform.hub.get_inventory(defines.inventory.hub_main)
 	-- Platform hub logistic points
@@ -163,12 +181,12 @@ local function compute_platform_requests(to_platform, from_planet)
 	local logi = to_platform.hub.get_logistic_point()
 	local reqests = {}
 	
-	for _, lp in pairs(logi) do
+	for _, lp in ipairs(logi) do
 		
-		for _, sec in pairs(lp.sections) do
+		for _, sec in ipairs(lp.sections) do
 			--game.print(" > sec: ".. serpent.block(sec.active))
 			if sec.active then
-				for _, fil in pairs(sec.filters) do
+				for _, fil in ipairs(sec.filters) do
 					--game.print(" > fil: ".. serpent.block(fil))
 					-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
 					if fil and fil.import_from == from_planet
@@ -190,7 +208,7 @@ local function compute_platform_requests(to_platform, from_planet)
 		
 		-- items on the way
 		--game.print(" > targeted_items_deliver: ".. serpent.block(on_the_way))
-		for _, item in pairs(lp.targeted_items_deliver) do
+		for _, item in ipairs(lp.targeted_items_deliver) do
 			local q = reqests[item.quality]
 			local i = q and q[item.name]
 			if i then
@@ -201,71 +219,139 @@ local function compute_platform_requests(to_platform, from_planet)
 	return reqests
 end
 
-local function get_radar_output_signals(data, radar, platf)
-	local radar_planet = radar.surface.planet.prototype
-	local signals = {}
-	
-	if platf and platf.valid then
-		--game.print(">> radar ".. platf.name)
-		if data.settings.read_plat_status then
-			-- signal space location that platform is orbiting
-			if platf.space_location then
-				table.insert(signals, { value={ type="space-location", name=platf.space_location.name, quality="normal" }, min=1 })
-			end
-			-- signal space connection platform travelling
-			-- since space connections are not supported as signals, output from/to space locations as signals with -1/-2 value
-			-- dont do 1/2 like platform hub, due to conflict with space_location, avoid using 2/3 to allow nauvis>0 as condition (use nauvis<0 to check if platform is leaving or arriving)
-			if platf.space_connection then
-				local from = platf.space_connection.from
-				local to = platf.space_connection.to
-				table.insert(signals, { value={ type="space-location", name=from.name, quality="normal" }, min=-1 })
-				table.insert(signals, { value={ type="space-location", name=to.name, quality="normal" }, min=-2 })
-			end
+local effective_requests = compute_platform_requests(platf, radar_planet)
+for quality, items in pairs(effective_requests) do
+	for item, count in pairs(items) do
+		if count > 0 then
+			table.insert(signals, { value={ type="item", name=item, quality=quality }, min=count })
 		end
-		
-		-- output effective requests items
-		-- plus "info" signal to know if requests are active without checking space location
-		if data.settings.read_plat_requests
-			  and platf.space_location == radar_planet
-			  and platf.hub and platf.hub.valid then
-			table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
-			
-			local effective_requests = compute_platform_requests(platf, radar_planet)
-			for quality, items in pairs(effective_requests) do
-				for item, count in pairs(items) do
-					if count > 0 then
-						table.insert(signals, { value={ type="item", name=item, quality=quality }, min=count })
-					end
+	end
+end
+]]
+local function write_platform_request_signals(platform, signals)
+	table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
+	
+	-- Platform main hub inventory (trash slots are hub_trash)
+	local inv = platform.hub.get_inventory(defines.inventory.hub_main)
+	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
+	local logi = platform.hub.get_logistic_point()[1] -- access directly to avoid iteration
+	
+	p = {skip=defines.print_skip.never}
+	
+	-- targeted_items_deliver and logistic point filters are already summed up per item/quality!
+	-- can simply output signal instead of manally summing up
+	
+	-- items already on the way
+	--game.print(" > targeted_items_deliver: ".. serpent.block(logi.targeted_items_deliver), p)
+	--local on_the_way = {}
+	--for _, item in ipairs(logi.targeted_items_deliver) do
+	--	local q = on_the_way[item.quality]
+	--	local i = q and q[item.name]
+	--	if i then
+	--		q[item.name] = item.count
+	--	end
+	--end
+	--
+	--local contents = {}
+	--for _, item in ipairs(inv.get_contents()) do
+	--	local q = contents[item.quality]
+	--	local i = q and q[item.name]
+	--	if i then
+	--		q[item.name] = item.count
+	--	end
+	--end
+	
+	if logi.filters then
+		--game.print(">> filters:")
+		-- this already filters by "import from" planet
+		for _, fil in ipairs(logi.filters) do
+			--game.print(" > ".. serpent.line(fil))
+			-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
+			if fil.count > 0 then -- type==nil, probably because hub requests have to be items
+				--game.print(" > ".. fil.name .." ".. fil.quality .." ".. fil.count, p)
+				
+				local count = fil.count
+				
+				--local otwq = on_the_way[fil.quality]
+				--local otw = otwq and otwq[fil.name]
+				--if otw then count = count - otw end
+				--
+				--local contq = contents[fil.quality]
+				--local cont = contq and contq[fil.name]
+				--if cont then count = count - cont end
+				
+				--count = count - inv.get_item_count({name=fil.name, quality=fil.quality})
+				
+				if count > 0 then
+					table.insert(signals, {
+						value = { type="item", name=fil.name, quality=fil.quality },
+						min = count
+					})
 				end
 			end
 		end
+	end
+end
+
+-- on_space_platform_changed_state 
+-- on_cargo_pod_delivered_cargo 
+
+local function get_radar_output_signals(data, radar, plat, signal_memo)
+	local radar_planet = radar.surface.planet.prototype
+	local signals = {}
+	
+	--game.print(">> radar ".. plat.name)
+	if data.read_plat_status then
+		-- signal space location that platform is orbiting
+		if plat.space_location then
+			table.insert(signals, { value={ type="space-location", name=plat.space_location.name, quality="normal" }, min=1 })
+		end
+		-- signal space connection platform travelling
+		-- since space connections are not supported as signals, output from/to space locations as signals with -1/-2 value
+		-- dont do 1/2 like platform hub, due to conflict with space_location, avoid using 2/3 to allow nauvis>0 as condition (use nauvis<0 to check if platform is leaving or arriving)
+		if plat.space_connection then
+			local from = plat.space_connection.from
+			local to = plat.space_connection.to
+			table.insert(signals, { value={ type="space-location", name=from.name, quality="normal" }, min=-1 })
+			table.insert(signals, { value={ type="space-location", name=to.name, quality="normal" }, min=-2 })
+		end
+	end
+	
+	-- output effective requests items
+	-- plus "info" signal to know if requests are active without checking space location
+	if data.read_plat_requests
+		  and plat.space_location == radar_planet
+		  and plat.hub and plat.hub.valid then
+		write_platform_request_signals(plat, signals)
 	end
 	
 	return signals
 end
 local function tick_radars()
+	-- memoize for platform signals since getting them is expensive, this way duplicate many radars reading one platform have constant cost
+	-- note that platform can only be at one planet at once
+	local signal_memo = {}
+	
 	for id, data in pairs(storage.data) do
-		local entity = game.get_entity_by_unit_number(id)
-		if entity and entity.valid then
-			local custom_circuit_behavior = data.settings.mode ~= nil
-			if custom_circuit_behavior then
-				create_cc(data, entity)
-				
-				local cc = data.circuit_cc.get_control_behavior()
-				local platf = data.settings.selected_platform and entity.force.platforms[data.settings.selected_platform]
-				
-				cc.enabled = platf ~= nil and platf.valid and entity.active and entity.energy > 0
-				if cc.enabled then
-					cc.sections[1].filters = get_radar_output_signals(data, entity, platf)
-				else
-					cc.sections[1].filters = {}
-				end
-			else
-				destroy_cc(data, entity)
+		--game.print(" > ".. id ..": ".. serpent.block(data))
+		
+		local entity = data.e
+		local ctrl = data.ctrl
+		if data.mode then
+			local plat = data.plat
+			
+			local active = plat ~= nil and plat.valid and entity.active and entity.energy > 0
+			if active then
+				ctrl.sections[1].filters = get_radar_output_signals(data, entity, plat, signal_memo)
 			end
+			ctrl.enabled = active
+		else
+			ctrl.enabled = false
 		end
 	end
 end
+
+--on_entity_logistic_slot_changed 
 
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
@@ -288,7 +374,7 @@ local function radar_gui_update_platforms(gui, data)
 			drop_down_platforms[counter] = platf.index
 			
 			-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
-			if data.settings.selected_platform == platf.index then
+			if data.selected_platform == platf.index then
 				sel_idx = counter
 			end
 			counter = counter+1
@@ -296,7 +382,7 @@ local function radar_gui_update_platforms(gui, data)
 	end
 	
 	if not sel_idx then -- selected_platform not found, it could have been deleted
-		data.settings.selected_platform = nil
+		data.selected_platform = nil
 		sel_idx = 1 -- [None]
 	end
 	
@@ -309,13 +395,13 @@ function handlers.radar_checkbox(event)
 	local gui = storage.open_guis[event.player_index]
 	local data = get_entity_data(gui.entity)
 	
-	if     event.element.name == "mode1" then data.settings.mode = nil
-	elseif event.element.name == "mode2" then data.settings.mode = "platforms"
-	elseif event.element.name == "option1" then data.settings.read_plat_requests = event.element.state
-	elseif event.element.name == "option2" then data.settings.read_plat_status = event.element.state end
+	if     event.element.name == "mode1" then data.mode = nil
+	elseif event.element.name == "mode2" then data.mode = "platforms"
+	elseif event.element.name == "option1" then data.read_plat_requests = event.element.state
+	elseif event.element.name == "option2" then data.read_plat_status = event.element.state end
 	
-	gui.refs.mode1.state = data.settings.mode == nil
-	gui.refs.mode2.state = data.settings.mode == "platforms"
+	gui.refs.mode1.state = data.mode == nil
+	gui.refs.mode2.state = data.mode == "platforms"
 	
 	gui.refs.vanilla_pane.visible = gui.refs.mode1.state
 	gui.refs.platforms_pane.visible = gui.refs.mode2.state
@@ -329,10 +415,10 @@ function handlers.radar_drop_down(event)
 	local data = get_entity_data(gui.entity)
 	
 	if event.element.name == "platform_drop_down" then
-		data.settings.selected_platform = gui.drop_down_platforms[event.element.selected_index]
+		data.selected_platform = gui.drop_down_platforms[event.element.selected_index]
+		data.plat = data.e.force.platforms[data.selected_platform]
 	end
 	
-	-- TODO: call radar_gui_update_platforms? 
 	radar_gui_update_platforms(gui, data)
 end
 function handlers.entity_window_close_button(event)
@@ -343,11 +429,11 @@ end
 local function radar_gui_update(gui, data)
 	radar_gui_update_platforms(gui, data)
 	
-	gui.refs.mode1.state = data.settings.mode == nil
-	gui.refs.mode2.state = data.settings.mode == "platforms"
+	gui.refs.mode1.state = data.mode == nil
+	gui.refs.mode2.state = data.mode == "platforms"
 	
-	gui.refs.option1.state = data.settings.read_plat_requests
-	gui.refs.option2.state = data.settings.read_plat_status
+	gui.refs.option1.state = data.read_plat_requests
+	gui.refs.option2.state = data.read_plat_status
 	
 	gui.refs.vanilla_pane.visible = gui.refs.mode1.state
 	gui.refs.platforms_pane.visible = gui.refs.mode2.state
@@ -416,12 +502,21 @@ script.on_event(defines.events.on_gui_closed, function(event)
 		--	player.play_sound{ path="hexcoder_radar_circ_close-sound" }
 		--end
 		
+		local entity = storage.open_guis[event.player_index].entity
 		storage.open_guis[event.player_index] = nil
 		event.element.destroy()
+		
+		local data = get_entity_data(entity)
+		if data and data.mode == nil then
+			-- remove radar from storage.data if at vanilla setting to save performance during iteration in ticks
+			data.cc.destroy()
+			storage.data[entity.unit_number] = nil
+		end
 	end
 end)
 
 -- reacting to LMB requires custom input(?)
+-- TODO: enable configuring ghosts? If that is done, can I keep settings on building correctly? via tags? will gui stay open during build process?
 script.on_event("hexcoder_radar_circ_left-click", function(event)
 	local player = game.get_player(event.player_index)
 	local entity = player.selected -- hovered entity
@@ -442,17 +537,19 @@ local function on_created_entity(event)
 	local entity = event.entity or event.destination
 	
 	if event.source then
-		get_radar_data_or_init(entity).settings = storage.data[event.source.unit_number]
+		get_radar_data_or_init(entity, storage.data[event.source.unit_number])
 	elseif event.tags then
-		get_radar_data_or_init(entity).settings = event.tags["hexcoder_radar_circ"]
+		get_radar_data_or_init(entity, event.tags["hexcoder_radar_circ"])
 	end
 	
 	-- This needs to happen for all radars
 	update_global_radar_channel_wires(entity.surface)
 end
+-- for all radars
 local function on_entity_died(event)
 	update_global_radar_channel_wires(event.entity.surface)
 end
+-- for all radars that had custom settings
 script.on_event(defines.events.on_object_destroyed, function(event)
 	for player_i, gui in pairs(storage.open_guis) do
 		-- close open entity gui if entity destroyed
@@ -463,7 +560,7 @@ script.on_event(defines.events.on_object_destroyed, function(event)
 	
 	local data = storage.data[event.useful_id]
 	if data then
-		destroy_cc(data)
+		data.cc.destroy()
 		storage.data[event.useful_id] = nil
 	end
 end)
@@ -498,7 +595,7 @@ script.on_event(defines.events.on_player_setup_blueprint, function (event)
 			
 			if is_radar(entity) and data then
 				local tags = bp_entity.tags or {}
-				tags["hexcoder_radar_circ"] = data.settings
+				tags["hexcoder_radar_circ"] = copy_settings({}, data)
 				bp_entity.tags = tags
 				-- need to modify name somehow if entity has custom name and and ghost version does not match somehow? (protocol_1903 [pY] on discord)
 				
@@ -513,31 +610,39 @@ end)
 
 -- on_(pre_)entity_settings_pasted doesn't get called for entities with no vanilla settings :(
 
---script.on_nth_tick(6, function(event)
---	for player_i, gui in pairs(storage.open_guis) do
---		local player = game.get_player(player_i)
---		-- close custom gui once out of reach
---		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
---		if not valid then
---			player.opened = nil
---		end
---	end
---end)
 script.on_nth_tick(1, function(event)
-	if #storage.open_guis > 0 then
-		for player_i, gui in pairs(storage.open_guis) do
-			local player = game.get_player(player_i)
-			-- close custom gui once out of reach
-			local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
-			if not valid then
-				player.opened = nil
-			end
+	for player_i, gui in pairs(storage.open_guis) do
+		local player = game.get_player(player_i)
+		-- close custom gui once out of reach
+		local valid = gui.entity.valid and player.can_reach_entity(gui.entity)
+		if not valid then
+			player.opened = nil
 		end
 	end
+	
+	tick_radars()
+end)
 
-	if #storage.data > 0 then
-		tick_radars()
+commands.add_command("hexcoder_radar_circ_vis", nil, function(command)
+	-- debug: visualize connections
+	for _, p in pairs(game.players) do
+		debug_vis_wires(p.surface, 60*10)
 	end
+	
+	--game.print("storage.open_guis: ".. serpent.block(storage.open_guis))
+	--game.print("storage.data: ".. serpent.block(storage.data))
+	
+	game.print("storage.open_guis:")
+	for k,v in pairs(storage.open_guis) do
+		game.print(k ..": ".. serpent.line(v))
+	end
+	game.print("storage.data:")
+	for k,v in pairs(storage.data) do
+		game.print(k ..": ".. serpent.line(v))
+	end
+end)
+commands.add_command("hexcoder_radar_circ_reset", nil, function(command)
+	_reset()
 end)
 
 --[[
@@ -551,8 +656,6 @@ data:extend({
     include_selected_prototype = true,
   }
 })
-
-
 --]]
 
 glib.register_handlers(handlers)

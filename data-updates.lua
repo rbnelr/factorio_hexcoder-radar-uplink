@@ -1,5 +1,5 @@
 mod_name = "hexcoder_radar_circ_"
-local dbg = false
+local dbg = true
 
 local radar = data.raw["radar"]["radar"]
 table.insert(radar.flags, "get-by-unit-number")
