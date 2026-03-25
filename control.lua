@@ -23,12 +23,156 @@ end
 local netR = {red=true, green=false}
 local netG = {red=false, green=true}
 
+
+-- to allow this mod to read platform data onto the circuit network wires, we want to stop the vanilla behavior of radars sharing circuit signals automatically
+-- to do so we need to remove the hidden wire_origin.radar wire, which cannot be done from lua
+-- It would be possible to make a copy of the radar prototype with connects_to_other_radars=false, and switch out the radars on demand
+-- but alternatively I can implement it in lua via wire_origin.script
+-- this costs performance on user interaction and may be brittle, but has the upside that I can later add the planned feature to send data in names channels
+-- This O(N) or O(N^2) algo could be optimized into O(1) linked list add/remove operation!
+
+-- O(N): ~3600radars = 67ms
+local function init_global_channel_radars(surface)
+	local radars = surface.find_entities_filtered{ type="radar", name="radar" }
+	if #radars == 0 then
+		storage.channels[surface.index] = nil
+		return
+	end
+	
+	storage.channels[surface.index] = { first=radars[1] }
+	
+	local R = defines.wire_connector_id.circuit_red
+	local G = defines.wire_connector_id.circuit_green
+	
+	-- connect all radars of same channel in chain
+	local prevR = nil
+	local prevG = nil
+	for _, radar in ipairs(radars) do
+		local data = storage.radars[radar.unit_number]
+		local channel = data and data.S.mode -- nil == global channel
+		
+		-- true: create connector: if no current connections, would otherwise return nil
+		local conR = radar.get_wire_connectors(true)[R]
+		local conG = radar.get_wire_connectors(true)[G]
+		
+		-- con.disconnect_all(defines.wire_origin.script) this may break other mods!
+		-- disconnect all previous script connections, assuming all script connection radar-to-radar are from us
+		for _, c in ipairs(conR.connections) do
+			if c.origin == defines.wire_origin.script and c.target.owner.name == "radar" then
+				conR.disconnect_from(c.target, defines.wire_origin.script)
+			end
+		end
+		for _, c in ipairs(conG.connections) do
+			if c.origin == defines.wire_origin.script and c.target.owner.name == "radar" then
+				conG.disconnect_from(c.target, defines.wire_origin.script)
+			end
+		end
+		
+		if channel == nil then
+			if prevR then conR.connect_to(prevR, false, defines.wire_origin.script) end
+			if prevG then conG.connect_to(prevG, false, defines.wire_origin.script) end
+			prevR = conR
+			prevG = conG
+		end
+	end
+	
+end
+local function add_global_channel_radar(entity)
+	game.print("add_global_channel_radar: ".. serpent.block(entity))
+	
+	local channel = storage.channels[entity.surface.index]
+	local first = channel.first
+	if first then
+		local R = defines.wire_connector_id.circuit_red
+		local G = defines.wire_connector_id.circuit_green
+		
+		local aR = first.get_wire_connectors(true)[R]
+		local aG = first.get_wire_connectors(true)[G]
+		local bR = entity.get_wire_connectors(true)[R]
+		local bG = entity.get_wire_connectors(true)[G]
+		
+		aR.connect_to(bR, false, defines.wire_origin.script)
+		aG.connect_to(bG, false, defines.wire_origin.script)
+	end
+	channel.first = entity
+end
+local function remove_global_channel_radar(entity)
+	game.print("remove_global_channel_radar: ".. serpent.block(entity))
+	
+	local channel = storage.channels[entity.surface.index]
+	
+	local conR = entity.get_wire_connectors(true)[R]
+	local conG = entity.get_wire_connectors(true)[G]
+	
+	local others = {}
+	for _, c in ipairs(conR.connections) do
+		if c.origin == defines.wire_origin.script and c.target.owner.name == "radar" then
+			table.insert(others, c.target)
+			conR.disconnect_from(c.target, defines.wire_origin.script)
+			conG.disconnect_from(c.target, defines.wire_origin.script)
+		end
+	end
+	-- assume max 2
+	-- if 1: no need to link neighbours
+	-- if 0: this radar is only one
+	if #others >= 2 then
+		game.print(">> others: ".. serpent.block(others))
+		
+		local aR = others[0]
+		local aG = lR.owner.get_wire_connectors()[G]
+		local bR = others[1]
+		local bG = lR.owner.get_wire_connectors()[G]
+		aR.connect_to(bR, false, defines.wire_origin.script)
+		aG.connect_to(bG, false, defines.wire_origin.script)
+	end
+	
+	if entity == channel.first then
+		channel.first = others[0].owner -- nil for last one
+		game.print(">> channel.first: ".. serpent.block(channel.first))
+	end
+end
+local function debug_vis_wires(surface, time_to_live)
+	local function _vis(entities)
+		for _, w in ipairs({
+			{t=defines.wire_connector_id.circuit_red  , col = { 1, .2, .2 }, offset={x=0, y=0}},
+			{t=defines.wire_connector_id.circuit_green, col = { .2, 1, .2 }, offset={x=-.1, y=-.1}},
+		}) do
+			for _, e in ipairs(entities) do
+				local con = e.get_wire_connectors()
+				con = con[w.t] and con[w.t].connections or {}
+				--game.print(">> con: ".. serpent.block(con))
+				for _, c in ipairs(con) do
+					if c.origin == defines.wire_origin.script then
+						local from = { entity=e, offset=w.offset }
+						local to = { entity=c.target.owner, offset=w.offset }
+						if from.entity.surface ~= surface then from = { position=from.entity.position, offset=w.offset } end
+						if   to.entity.surface ~= surface then   to = { position=  to.entity.position, offset=w.offset } end
+						
+						rendering.draw_line{ from = from, to = to, color = w.col, width = 2, surface = surface, time_to_live = time_to_live }
+						rendering.draw_line{ from = from, to = to, color = w.col, width = 8, surface = surface, time_to_live = time_to_live, render_mode="chart" }
+					end
+				end
+			end
+		end
+	end
+	
+	_vis(surface.find_entities_filtered{ name="radar" })
+	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-cc" })
+	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-dc" })
+end
+
+
 local function init(event)
 	storage.open_guis = {}
 	storage.radars = {}
 	storage.platforms = {} 
 	storage.polling_radars = {}
 	storage.polling_platforms = {}
+	storage.channels = {}
+	
+	for _, surf in pairs(game.surfaces) do
+		init_global_channel_radars(surf)
+	end
 end
 local function _reset(event) -- allow me to fix outdated state during dev
 	for _, player in pairs(game.players) do player.opened = nil end
@@ -321,72 +465,6 @@ script.on_event(defines.events.on_entity_logistic_slot_changed, function (event)
 	end
 end)
 
--- to allow this mod to read platform data onto the circuit network wires, we want to stop the vanilla behavior of radars sharing circuit signals automatically
--- to do so we need to remove the hidden wire_origin.radar wire, which cannot be done from lua
--- It would be possible to make a copy of the radar prototype with connects_to_other_radars=false, and switch out the radars on demand
--- but alternatively I can implement it in lua via wire_origin.script
--- this costs performance on user interaction and may be brittle, but has the upside that I can later add the planned feature to send data in names channels
--- This O(N) or O(N^2) algo could be optimized into O(1) linked list add/remove operation!
-local function update_global_radar_channel_wires(surface)
-	local radars = surface.find_entities_filtered{ type="radar", name="radar" }
-	
-	-- connect all radars of same channel in chain
-	for _, w in ipairs({ defines.wire_connector_id.circuit_red, defines.wire_connector_id.circuit_green }) do
-		local prev = nil
-		for _, radar in ipairs(radars) do
-			local data = storage.radars[radar.unit_number]
-			local channel = data and data.S.mode -- nil == global channel
-			
-			local con = radar.get_wire_connectors(true)[w] -- true: create connector: if no current connections, would otherwise return nil
-			-- disconnect all previous script connections, assuming that these are the ones we made in this function
-			-- this may break other mods! TODO: only disconnect radar-to-radar connections?
-			--con.disconnect_all(defines.wire_origin.script)
-			
-			for _, c in ipairs(con.connections) do
-				if c.origin == defines.wire_origin.script and c.target.owner.type == "radar" and c.target.owner.name == "radar" then
-					con.disconnect_from(c.target, defines.wire_origin.script)
-				end
-			end
-			
-			if channel == nil then
-				if prev then
-					con.connect_to(prev, false, defines.wire_origin.script)
-				end
-				prev = con
-			end
-		end
-	end
-end
-local function debug_vis_wires(surface, time_to_live)
-	local function _vis(entities)
-		for _, w in ipairs({
-			{t=defines.wire_connector_id.circuit_red  , col = { 1, .2, .2 }, offset={x=0, y=0}},
-			{t=defines.wire_connector_id.circuit_green, col = { .2, 1, .2 }, offset={x=-.1, y=-.1}},
-		}) do
-			for _, e in ipairs(entities) do
-				local con = e.get_wire_connectors()
-				con = con[w.t] and con[w.t].connections or {}
-				--game.print(">> con: ".. serpent.block(con))
-				for _, c in ipairs(con) do
-					if c.origin == defines.wire_origin.script then
-						local from = { entity=e, offset=w.offset }
-						local to = { entity=c.target.owner, offset=w.offset }
-						if from.entity.surface ~= surface then from = { position=from.entity.position, offset=w.offset } end
-						if   to.entity.surface ~= surface then   to = { position=  to.entity.position, offset=w.offset } end
-						
-						rendering.draw_line{ from = from, to = to, color = w.col, width = 2, surface = surface, time_to_live = time_to_live }
-						rendering.draw_line{ from = from, to = to, color = w.col, width = 8, surface = surface, time_to_live = time_to_live, render_mode="chart" }
-					end
-				end
-			end
-		end
-	end
-	
-	_vis(surface.find_entities_filtered{ name="radar" })
-	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-cc" })
-	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-dc" })
-end
-
 -- there seems to be no event for scheduled_for_deletion, so lets just stay connected until it is deleted
 local function platform_valid(p)
 	-- platforms being built don't have a hub yet
@@ -674,7 +752,11 @@ function handlers.radar_checkbox(event)
 	gui.refs.platforms_pane.visible = gui.refs.mode2.state
 	
 	if event.element.name == "mode1" or event.element.name == "mode2" then
-		update_global_radar_channel_wires(data.entity.surface)
+		if data.S.mode == nil then
+			add_global_channel_radar(data.entity)
+		else
+			remove_global_channel_radar(data.entity)
+		end
 	end
 	
 	refresh_radar(data)
@@ -847,7 +929,7 @@ local function on_created_entity(event)
 	end
 	
 	-- This needs to happen for all radars
-	update_global_radar_channel_wires(entity.surface)
+	add_global_channel_radar(entity)
 end
 for _, event in ipairs({
 	defines.events.on_built_entity,
@@ -859,11 +941,17 @@ for _, event in ipairs({
 }) do
 	script.on_event(event, on_created_entity, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
 end
-
-script.on_event(defines.events.on_entity_died, function(event)
-	-- This needs to happen for all radars
-	update_global_radar_channel_wires(event.entity.surface)
-end, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
+local function on_entity_removed(event)
+	remove_global_channel_radar(event.entity)
+end
+for _, event in ipairs({
+	defines.events.on_entity_died,
+	defines.events.on_player_mined_entity,
+	defines.events.on_robot_pre_mined,
+	defines.events.on_space_platform_pre_mined,
+}) do
+	script.on_event(event, on_entity_removed, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
+end
 -- for all radars: if dies apply tags to ghost to keep settings on revive
 script.on_event(defines.events.on_post_entity_died, function(event)
 	--game.print("on_post_radar_died: ".. serpent.block({event}))
@@ -922,18 +1010,18 @@ commands.add_command("hexcoder_radar_uplink-vis", nil, function(command)
 		debug_vis_wires(p.surface, 60*10)
 	end
 	
-	game.print("storage.open_guis:")
-	for k,v in pairs(storage.open_guis) do
-		game.print(k ..": ".. serpent.line(v))
-	end
-	game.print("storage.platforms:")
-	for k,v in pairs(storage.platforms) do
-		game.print(k ..": ".. serpent.line(v))
-	end
-	game.print("storage.radars:")
-	for k,v in pairs(storage.radars) do
-		game.print(k ..": ".. serpent.line(v))
-	end
+	--game.print("storage.open_guis:")
+	--for k,v in pairs(storage.open_guis) do
+	--	game.print(k ..": ".. serpent.line(v))
+	--end
+	--game.print("storage.platforms:")
+	--for k,v in pairs(storage.platforms) do
+	--	game.print(k ..": ".. serpent.line(v))
+	--end
+	--game.print("storage.radars:")
+	--for k,v in pairs(storage.radars) do
+	--	game.print(k ..": ".. serpent.line(v))
+	--end
 end)
 commands.add_command("hexcoder_radar_uplink-reset", nil, function(command)
 	_reset()
