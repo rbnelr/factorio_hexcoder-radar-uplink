@@ -10,17 +10,10 @@ Ideas:
   
 --]]
 
--- TODO: refactor code: model being
--- get_entity_data(entity/id) -> get or insert entity data with default settings
--- can then modify settings etc
--- data.refresh() -> refresh after settings were modified, this can delete itself from storage if settings are default, de/spawn combinators, or rewire
--- data.destroy() or reset() -> reset settings and thus despawn and revert all mod combinators (can be implemented by resetting settings and then calling refresh?)
-
 -- TODO: removing glib dependency would be easy
 local util = require("util")
 local glib = require("__glib__/glib")
 local default_frame = require("__glib__/examples/default_frame")
---local prnt = {sound=defines.print_sound.never}
 
 local handlers = {}
 
@@ -65,8 +58,8 @@ local function set_tags(ghost, settings)
 	tags["hexcoder_radar_uplink"] = settings
 	ghost.tags = tags
 end
-local function settings_to_tags(ghost, entity)
-	local data = storage.radars[entity.unit_number]
+local function settings_to_tags(ghost, entity_id)
+	local data = storage.radars[entity_id]
 	if data then
 		set_tags(ghost, data.S)
 		return true
@@ -512,14 +505,14 @@ local function refresh_radar(data)
 	local planet_sig = {type="space-location", name=entity.surface.planet.prototype.name}
 	local params = {
 		{conditions={
-			{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">=", compare_type="and", first_signal_networks=netR}
+			{first_signal={type="virtual", name="signal-each"}, constant=0, comparator="!=", first_signal_networks=netR}
 		},outputs={
 			{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
 		}},
 		
 		{conditions={
 			{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
-			{first_signal=planet_sig, constant=0, comparator=">", first_signal_networks=netG},
+			{first_signal=planet_sig, constant=0, comparator=">", compare_type="and", first_signal_networks=netG},
 		},outputs={
 			{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
 		}},
@@ -528,7 +521,8 @@ local function refresh_radar(data)
 	local dcStat = data.dcs[1].get_wire_connectors(true)
 	local dcReq = data.dcs[2].get_wire_connectors(true)
 	
-	local RG = { data.S.read_plat_statusRG, data.S.read_plat_requestsRG }
+	local RG = { data.S.read_plat_status and data.S.read_plat_statusRG or 0,
+	             data.S.read_plat_requests and data.S.read_plat_requestsRG or 0 }
 	for i=1,2 do
 		local combinator = data.dcs[i]
 		combinator.get_control_behavior().parameters = params[i]
@@ -767,9 +761,7 @@ local function create_radar_gui(player, entity)
 	return window
 end
 
-
-
-----
+---- custom entity gui and handle blueprinting etc.
 local _skip_closing_sound = nil
 local function can_open_entity_gui(player, entity)
 	return entity.valid and player.force == entity.force and player.can_reach_entity(entity)
@@ -843,10 +835,10 @@ end)
 
 -- this allows blueprint to copy custom settings, and supports on_entity_cloned
 -- TODO: blueprinting over does not trigger any events (could detect blueprint placed by player in other ways, but is complicated)
--- TODO: entities dying due to damage don't keep settings yet
 -- TODO: things being built due to undo redo don't work yet
 local function on_created_entity(event)
 	local entity = event.entity or event.destination
+	--game.print("on_created_entity: ".. serpent.block({ event, entity }))
 	
 	local copy_settings = (event.tags and event.tags["hexcoder_radar_uplink"])
 	                   or (event.source and storage.radars[event.source.unit_number].S)
@@ -857,23 +849,6 @@ local function on_created_entity(event)
 	-- This needs to happen for all radars
 	update_global_radar_channel_wires(entity.surface)
 end
--- for all radars: if dies apply tags to ghost to keep settings on revive
-local function on_radar_died(event)
-	local e = event.entity
-	-- ghost created seems to have no event, apparently we have to search for ghost entity
-	--local ghost = e.surface.find_entity(e.name, e.position)
-	local es = e.surface.find_entities_filtered{position=e.position}--, type="", name=""
-	game.print("on_entity_died: ".. serpent.block({es}))
-	--game.print("on_entity_died: ".. serpent.block({
-	--	e, ghost, e.unit_number, --[[ghost.ghost_unit_number,]] ghost.unit_number
-	--}))
-	-- TODO: ghost does not exist yet?
-	
-	update_global_radar_channel_wires(event.entity.surface)
-end
-
--- on_entity_settings_pasted doesn't get called for entities with no vanilla settings :(
-
 for _, event in ipairs({
 	defines.events.on_built_entity,
 	defines.events.on_robot_built_entity,
@@ -884,7 +859,20 @@ for _, event in ipairs({
 }) do
 	script.on_event(event, on_created_entity, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
 end
-script.on_event(defines.events.on_entity_died, on_radar_died, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
+
+script.on_event(defines.events.on_entity_died, function(event)
+	-- This needs to happen for all radars
+	update_global_radar_channel_wires(event.entity.surface)
+end, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
+-- for all radars: if dies apply tags to ghost to keep settings on revive
+script.on_event(defines.events.on_post_entity_died, function(event)
+	--game.print("on_post_radar_died: ".. serpent.block({event}))
+	if event.ghost and event.unit_number then
+		settings_to_tags(event.ghost, event.unit_number)
+	end
+end, {{filter = "type", type = "radar"}})
+
+-- on_entity_settings_pasted doesn't get called for entities with no vanilla settings :(
 
 script.on_event(defines.events.on_player_setup_blueprint, function(event)
 	local player = game.get_player(event.player_index)
@@ -901,7 +889,7 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
 	for i, bp_entity in pairs(entities) do
 		if bp_entity.name == "radar" then
 			mapping = mapping or event.mapping.get()
-			if settings_to_tags(bp_entity, mapping[i]) then
+			if settings_to_tags(bp_entity, mapping[i].unit_number) then
 				-- need to modify name somehow if entity has custom name and and ghost version does not match somehow? (protocol_1903 [pY] on discord)
 				changed = true
 			end
@@ -927,6 +915,7 @@ script.on_nth_tick(6, function(event)
 	end
 end)
 
+---- Commands
 commands.add_command("hexcoder_radar_uplink-vis", nil, function(command)
 	-- debug: visualize connections
 	for _, p in pairs(game.players) do
