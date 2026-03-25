@@ -1,4 +1,4 @@
-mod_name = "hexcoder_radar_uplink_"
+mod_name = "hexcoder_radar_uplink-"
 local dbg = true
 
 local radar = data.raw["radar"]["radar"]
@@ -61,3 +61,40 @@ dc.activity_led_light = nil
 dc.activity_led_sprites = nil
 
 data:extend({cc, dc})
+
+
+--[[
+entity = table.deepcopy(data.raw["decider-combinator"]["decider-combinator"])
+local REMOVE_KEY = "-remove-"
+overwriteContent(entity, {
+	name = "invisible-decider-combinator",
+	order = "zzzz",
+	selection_box = REMOVE_KEY,
+	collision_box = REMOVE_KEY,
+	collision_mask = { layers = { water_tile = true, item = true, is_object = true } },
+	draw_circuit_wires = false,
+	energy_source = {
+		type = "void",
+	},
+	flags = {
+		"placeable-neutral", 
+		"player-creation",
+		"not-on-map",
+		"not-blueprintable",
+		"hide-alt-info",
+		"not-deconstructable",
+		"not-upgradable"
+	},
+	sprites = noImage,
+	equal_symbol_sprites = noImage,
+	greater_or_equal_symbol_sprites = noImage,
+	greater_symbol_sprites = noImage,
+	less_or_equal_symbol_sprites = noImage,
+	less_symbol_sprites = noImage,
+	not_equal_symbol_sprites = noImage,
+	activity_led_sprites = noImage,
+
+}, REMOVE_KEY)
+
+data:extend({	entity })
+]]

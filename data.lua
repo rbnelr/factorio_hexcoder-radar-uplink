@@ -1,11 +1,12 @@
-mod_name = "hexcoder_radar_uplink_"
+mod_name = "hexcoder_radar_uplink-"
 
 data:extend({
 	{
 		type = "custom-input",
-		name = mod_name.."left-click",
-		key_sequence = "mouse-button-1",
-		hidden = true,
+		name = mod_name.."open-gui",
+		key_sequence = "",
+		linked_game_control = "open-gui",
+		include_selected_prototype = true,
 	},
 	{
 		type = "sound",
