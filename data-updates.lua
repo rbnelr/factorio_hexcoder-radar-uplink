@@ -1,8 +1,8 @@
-mod_name = "hexcoder_radar_circ_"
+mod_name = "hexcoder_radar_uplink_"
 local dbg = true
 
 local radar = data.raw["radar"]["radar"]
-table.insert(radar.flags, "get-by-unit-number")
+--table.insert(radar.flags, "get-by-unit-number")
 -- override default auto-connect logic
 -- would have updated wire_origin.radar connection manually, but can't change it from lua
 -- so replicate this behavior manually via wire_origin.script
@@ -59,6 +59,5 @@ dc.close_sound = nil
 dc.activity_led_light = nil
 --dc.activity_led_light_offsets = nil
 dc.activity_led_sprites = nil
-
 
 data:extend({cc, dc})

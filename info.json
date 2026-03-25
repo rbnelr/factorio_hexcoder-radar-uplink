@@ -1,7 +1,7 @@
 {
-	"name": "hexcoder-silo-control",
-	"version": "0.0.1",
-	"title": "Rocket Silo Controls",
+	"name": "hexcoder-radar-uplink",
+	"version": "0.1.0",
+	"title": "Radar Uplink",
 	"author": "rbnelr",
 	"factorio_version": "2.0",
 	"dependencies": [
@@ -9,5 +9,5 @@
         "space-age >= 2.0.61",
 		"glib"
 	],
-	"description": "TODO"
+	"description": "Flexible radar circuit interface. Read space platforms status and requests to better control rocket silos. Share signals across surface via named channels, or enable interplanetary connection. Even count enemies or all entities in radar range.\nSupports dynamic target selection through circuit signals and can be customized via options.\n Suggestions welcome."
 }
