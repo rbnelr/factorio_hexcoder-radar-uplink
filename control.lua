@@ -1,5 +1,7 @@
 --[[
--- TODO: reimplement full request math via hidden combinators
+-- TODO: allow access to raw inventory, request and on the way signals (should be expose these with 1 or 2 tick delay?)
+  -> user would likely want to compute them themselves, so either they add exactly one tick more and 1 tick is ideal, or they add more delay anyway
+  -> connect to 1tick is ideal, minimal hidden circuits, minimal delay, make the gui allow either status + requests at 2 tick or the raw versions at 1 tick, then put a warning somewhere
 
 -- TODO: consider how to delete channels
 -- TODO: GUI to actually add and select custom channels
@@ -62,7 +64,7 @@ storage = storage
 
 ---@class PlatformData
 ---@field platform LuaSpacePlatform
----@field ccs LuaEntity[]?
+---@field readers table<string, LuaEntity>
 ---@field _prev_conn LuaSpaceConnectionPrototype?
 ---@field _prev_progress number?
 
@@ -105,7 +107,7 @@ local function update_channel_surface_links(channel_name)
 				lG.connect_to(h[W.circuit_green], false, HIDDEN)
 			end
 			
-			if prevR then
+			if prevR then ---@cast prevG -nil
 				lR.connect_to(prevR, false, HIDDEN)
 				lG.connect_to(prevG, false, HIDDEN)
 			end
@@ -355,11 +357,17 @@ local function _reset(event) -- allow me to fix outdated state during dev
 	storage.chsurfaces = nil
 	
 	for _, s in pairs(game.surfaces) do
-		for _, cc in pairs(s.find_entities_filtered{ type="constant-combinator", name="hexcoder_radar_uplink-cc" }) do
-			cc.destroy()
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-cc" }) do
+			e.destroy()
 		end
-		for _, cc in pairs(s.find_entities_filtered{ type="decider-combinator", name="hexcoder_radar_uplink-dc" }) do
-			cc.destroy()
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-dc" }) do
+			e.destroy()
+		end
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-ac" }) do
+			e.destroy()
+		end
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-pc" }) do
+			e.destroy()
 		end
 	end
 	
@@ -391,7 +399,6 @@ end
 ---@param data PlatformData
 local function update_platform_status(data)
 	local plat = data.platform
-	local ctrl = data.ccs[1].get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	
 	local signals = {}
 	-- platform index
@@ -458,32 +465,25 @@ local function update_platform_status(data)
 		storage.polling_platforms[data.platform.index] = data
 	end
 	
+	local ctrl = data.readers.stat_raw.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[1].filters = signals
 end
 ---@param data PlatformData
 local function update_platform_requests_at_planet(data)
 	local plat = data.platform
-	--if not plat.space_location then return end
 	
-	local ctrl = data.ccs[2].get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
-	
-	local signals = {}
+	local signals = {} -- temporary table of signals, could avoid this via LuaLogisticSection.set_slot, but may be slower due to more api calls(?)
 	table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
 	
-	-- Platform main hub inventory (trash slots are hub_trash)
-	local inv = plat.hub.get_inventory(defines.inventory.hub_main)
-	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
-	local logi = plat.hub.get_logistic_point()[1] -- access directly to avoid iteration
-	
+	-- Platform hub logistic points, for hubs we seem to always have 2: { requester, passive_provider }
+	local logi = plat.hub.get_logistic_point()[1]
 	if logi.filters then
-		--game.print(">> filters: ")
-		
-		-- this already filters by "import from" planet
+		game.print(">> filters: ")
+		-- filters are already compiled (all requests for one item summed) and filtered by import_from planet (unlike raw sections)
 		for _, fil in ipairs(logi.filters) do
-			--game.print(" > ".. serpent.line(fil))
+			game.print(" > ".. serpent.line(fil))
 			-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
-			-- TODO: hold on, do <= 0 even show up in this version?
-			if fil.count > 0 then -- type==nil, probably because hub requests have to be items
+			if fil.count > 0 then
 				table.insert(signals, {
 					value = { type="item", name=fil.name, quality=fil.quality },
 					min = fil.count
@@ -492,76 +492,30 @@ local function update_platform_requests_at_planet(data)
 		end
 	end
 	
+	local ctrl = data.readers.req_raw.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[1].filters = signals
 end
---[[
-local function _update_platform_requests(platform)
-	signals[3] = { value={ type="virtual", name="signal-info", quality="normal" }, min=1 }
-	local slot = 4
+---@param plat LuaSpacePlatform
+local function update_platform_pod_deliveries(plat)
+	local data = storage.platforms[plat.index]
+	if not data then return end
 	
-	-- Platform main hub inventory (trash slots are hub_trash)
-	local inv = platform.hub.get_inventory(defines.inventory.hub_main)
 	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
-	local logi = platform.hub.get_logistic_point()[1] -- access directly to avoid iteration
+	local logi = plat.hub.get_logistic_point()[1] -- access directly to avoid iteration
 	
-	p = {skip=defines.print_skip.never}
-	
-	-- targeted_items_deliver and logistic point filters are already summed up per item/quality!
-	-- can simply output signal instead of manally summing up
-	
-	-- items already on the way
-	--game.print(" > targeted_items_deliver: ".. serpent.block(logi.targeted_items_deliver), p)
-	--local on_the_way = {}
-	--for _, item in ipairs(logi.targeted_items_deliver) do
-	--	local q = on_the_way[item.quality]
-	--	local i = q and q[item.name]
-	--	if i then
-	--		q[item.name] = item.count
-	--	end
-	--end
-	--
-	--local contents = {}
-	--for _, item in ipairs(inv.get_contents()) do
-	--	local q = contents[item.quality]
-	--	local i = q and q[item.name]
-	--	if i then
-	--		q[item.name] = item.count
-	--	end
-	--end
-	
-	if logi.filters then
-		--game.print(">> filters:")
-		-- this already filters by "import from" planet
-		for _, fil in ipairs(logi.filters) do
-			--game.print(" > ".. serpent.line(fil))
-			-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
-			if fil.count > 0 then -- type==nil, probably because hub requests have to be items
-				--game.print(" > ".. fil.name .." ".. fil.quality .." ".. fil.count, p)
-				
-				local count = fil.count
-				
-				--local otwq = on_the_way[fil.quality]
-				--local otw = otwq and otwq[fil.name]
-				--if otw then count = count - otw end
-				--
-				--local contq = contents[fil.quality]
-				--local cont = contq and contq[fil.name]
-				--if cont then count = count - cont end
-				
-				--count = count - inv.get_item_count({name=fil.name, quality=fil.quality})
-				
-				if count > 0 then
-					signals[slot] = {
-						value = { type="item", name=fil.name, quality=fil.quality },
-						min = count
-					}
-					slot = slot + 1
-				end
-			end
+	local signals = {}
+	for _, item in ipairs(logi.targeted_items_deliver) do
+		if item.count > 0 then
+			table.insert(signals, {
+				value = { type="item", name=item.name, quality=item.quality },
+				min = item.count
+			})
 		end
 	end
+	
+	local ctrl = data.readers.otw_raw.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	ctrl.sections[1].filters = signals -- could avoid
 end
-]]
 
 script.on_event(defines.events.on_space_platform_changed_state, function (event)
 	--game.print("on_space_platform_changed_state: platf ".. event.platform.index .." new_state: ".. serpent.line(event.platform.state))
@@ -588,6 +542,33 @@ script.on_event(defines.events.on_entity_logistic_slot_changed, function (event)
 	end
 end)
 
+-- on_rocket_launch_ordered: the silos are loaded but not yet counted as targeted_items_deliver
+-- on this exact tick of on_rocket_launch_ordered the silo contents get added to targeted_items_deliver, and the launch animation can't be cancelled I think
+script.on_event(defines.events.on_rocket_launch_ordered, function (event)
+	--game.print("on_rocket_launch_ordered : ".. serpent.block(event))
+	local pod = event.rocket and event.rocket.attached_cargo_pod
+	local hub = pod and pod.cargo_pod_destination.station
+	local platform = hub and hub.surface.platform
+	-- NOTE: cargo_unit, chest, robot_cargo, item_main all return this same inventory
+	--local cargo = pod.get_inventory(defines.inventory.cargo_unit) -- but don't need this because it's likely cheap to just use targeted_items_deliver
+	
+	if platform then
+		update_platform_pod_deliveries(platform)
+	end
+end)
+-- on_rocket_launched: launch animation over (I think rocket silo can be filled again, now pods appear on platform surface, so landing animation)
+-- on_cargo_pod_delivered_cargo: pods have landed, and get removed from targeted_items_deliver and added to inventory on this exact tick
+script.on_event(defines.events.on_cargo_pod_delivered_cargo, function (event)
+	--game.print("on_cargo_pod_delivered_cargo : ".. serpent.block(event))
+	local pod = event.cargo_pod
+	local platform = pod and pod.surface and pod.surface.platform -- cargo_pod_destination not set anymore
+	--local cargo = pod.get_inventory(defines.inventory.cargo_unit) -- empty already
+	
+	if platform then
+		update_platform_pod_deliveries(platform)
+	end
+end)
+
 -- there seems to be no event for scheduled_for_deletion, so lets just stay connected until it is deleted
 ---@param p LuaSpacePlatform
 ---@return boolean
@@ -603,19 +584,63 @@ local function init_platform(platform)
 	if not data then
 		local reg_id, index = script.register_on_object_destroyed(platform)
 		
-		local ccs = {}
-		for i=1,4 do
-			ccs[i] = platform.surface.create_entity{
-				name="hexcoder_radar_uplink-cc", force=platform.force,
-				position={platform.hub.position.x+i-2, platform.hub.position.y+3}, snap_to_grid=false,
+		local base_pos = { x=platform.hub.position.x-2, y=platform.hub.position.y }
+		local arith_negate = {
+			first_constant=0, second_signal={type="virtual", name="signal-each"}, operation="-",
+			output_signal={type="virtual", name="signal-each"}
+		}
+		local arith_identity = {
+			first_signal={type="virtual", name="signal-each"}, second_constant=1, operation="*",
+			output_signal={type="virtual", name="signal-each"}
+		}
+		-- contant combinators script can write signals into on events
+		local function combinator(type, x,y, descr, arith, input)
+			local combinator = platform.surface.create_entity{
+				name=type, force=platform.force,
+				position={base_pos.x+x, base_pos.y+y}, snap_to_grid=false,
 				direction=defines.direction.south
-			}
-			ccs[i].destructible = false
+			} ---@cast combinator -nil
+			combinator.destructible = false
+			combinator.combinator_description = descr
+			if arith then
+				local ctrl = combinator.get_control_behavior() --[[@as LuaArithmeticCombinatorControlBehavior]]
+				ctrl.parameters = arith
+			end
+			if input then
+				local i = input.get_wire_connectors(true)[W.circuit_red]
+				local o = combinator.get_wire_connectors(true)[W.combinator_input_red]
+				o.connect_to(i, false, HIDDEN)
+			end
+			return combinator
 		end
+		local function proxy_container(type, x,y)
+			local pc = platform.surface.create_entity{
+				name=type, force=platform.force,
+				position={base_pos.x+x, base_pos.y+y}, snap_to_grid=false
+			} ---@cast pc -nil
+			pc.destructible = false
+			pc.proxy_target_entity = platform.hub
+			pc.proxy_target_inventory = defines.inventory.hub_main
+			local ctrl = pc.get_or_create_control_behavior() --[[@as LuaProxyContainerControlBehavior]]
+			ctrl.read_contents = true
+			return pc
+		end
+		
+		local readers = {}
+		readers.stat_raw = combinator("hexcoder_radar_uplink-cc", 0,0, "platform status")
+		readers.req_raw = combinator("hexcoder_radar_uplink-cc", 1,0, "platform requests at current planet")
+		readers.otw_raw = combinator("hexcoder_radar_uplink-cc", 2,0, "platform targeted_items_deliver ('on the way' via rocket silo cargo pod)")
+		-- proxy container that automatically reads platform hub iventory without user needing to use "read contents" option
+		readers.inv_raw = proxy_container("hexcoder_radar_uplink-pc", 3,0)
+		
+		readers.stat = combinator("hexcoder_radar_uplink-ac", 0,2, "platform status, delayed 1 tick", arith_identity, readers.stat_raw)
+		readers.req = combinator("hexcoder_radar_uplink-ac", 1,2, "platform requests at current planet, delayed 1 tick", arith_identity, readers.req_raw)
+		readers.otw_neg = combinator("hexcoder_radar_uplink-ac", 2,2, "platform on the way, delayed 1 tick", arith_negate, readers.otw_raw)
+		readers.inv_neg = combinator("hexcoder_radar_uplink-ac", 3,2, "platform hub inventory negated", arith_negate, readers.inv_raw)
 		
 		data = {
 			platform=platform,
-			ccs=ccs,
+			readers=readers,
 		}
 		storage.platforms[index] = data
 		
@@ -627,10 +652,10 @@ end
 ---@param id platform_index
 local function reset_platform(id)
 	local data = storage.platforms[id]
-	for _,v in ipairs(data.ccs) do
-		v.destroy()
+	for _,e in pairs(data.readers) do
+		e.destroy()
 	end
-	data.ccs = nil
+	data.readers = nil
 	storage.platforms[id] = nil
 end
 
@@ -740,17 +765,20 @@ local function refresh_radar(data)
 		if plat_data then
 			--game.print("reconnect!")
 			
-			local ccStat = plat_data.ccs[1].get_wire_connectors(true)
-			local ccReq = plat_data.ccs[2].get_wire_connectors(true)
-			--local c = plat_data.ccs[3].get_wire_connectors(true)
+			local rStat = plat_data.readers.stat.get_wire_connectors(true)
+			local rReq = plat_data.readers.req.get_wire_connectors(true)
+			local rOtw = plat_data.readers.otw_neg.get_wire_connectors(true)
+			local rInv = plat_data.readers.inv_neg.get_wire_connectors(true)
 			
 			-- platform status to platform status on red wire
-			dcStatR.connect_to(ccStat[W.circuit_red], false, HIDDEN)
+			dcStatR.connect_to(rStat[W.combinator_output_red], false, HIDDEN)
 			
 			-- platform raw requests to request on red wire
 			-- platform status to requests on green wire for planet check
-			dcReq[W.combinator_input_red  ].connect_to(ccReq [W.circuit_red  ], false, HIDDEN)
-			dcReq[W.combinator_input_green].connect_to(ccStat[W.circuit_green], false, HIDDEN)
+			dcReq[W.combinator_input_red].connect_to(rReq[W.combinator_output_red], false, HIDDEN)
+			dcReq[W.combinator_input_red].connect_to(rOtw[W.combinator_output_red], false, HIDDEN)
+			dcReq[W.combinator_input_red].connect_to(rInv[W.combinator_output_red], false, HIDDEN)
+			dcReq[W.combinator_input_green].connect_to(rStat[W.combinator_output_green], false, HIDDEN)
 			
 			connected = true
 		end
@@ -1160,34 +1188,3 @@ commands.add_command("hexcoder_radar_uplink-reset", nil, function(command)
 end)
 
 glib.register_handlers(handlers)
-
--- the silos are loaded but not yet counted as targeted_items_deliver
--- on this exact tick of on_rocket_launch_ordered the silo contents get added to targeted_items_deliver, and the launch animation can't be cancelled I think
-script.on_event(defines.events.on_rocket_launch_ordered , function(event)
-	--game.print("on_rocket_launch_ordered : ".. serpent.block(event))
-end)
--- launch animation over (I think rocket silo can be filled again, now pods appear on platform surface, so landing animation)
-script.on_event(defines.events.on_rocket_launched, function(event)
-	--game.print("on_rocket_launched: ".. serpent.block(event))
-end)
--- pods have landed, and get removed from targeted_items_deliver and added to inventory on this exact tick
-script.on_event(defines.events.on_cargo_pod_delivered_cargo , function(event)
-	--game.print("on_cargo_pod_delivered_cargo : ".. serpent.block(event))
-end)
--- targeted_items_deliver can be assumed to not change for the target platform between these events!
-
--- no inventoty changed event though...
--- tricks:
--- get_linked_inventory -> maybe can link inventory to it and read that one via circuit?
--- just connect hidden wire and force player to live with read inventory on hub
-
--- ProxyContainerPrototype!!
--- 
-
-
-local function _compute(to_platform, tick)
-	--local inv = to_platform.hub.get_inventory(defines.inventory.hub_main)
-	local logi = to_platform.hub.get_logistic_point()[1]
-	game.print(" > targeted_items_deliver: ".. serpent.line({logi.targeted_items_deliver, tick}))
-	--game.print(" > targeted_items_deliver: ".. serpent.block(logi.targeted_items_deliver))
-end

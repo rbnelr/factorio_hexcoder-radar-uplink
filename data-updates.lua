@@ -9,85 +9,51 @@ local radar = data.raw["radar"]["radar"]
 radar.connects_to_other_radars = false
 data.raw["radar"]["radar"] = radar
 
+local function make_phantom(thing)
+	thing.flags = {"not-on-map",
+		"not-rotatable", "not-flammable", "not-repairable",
+		"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
+		"not-in-kill-statistics", "not-in-made-in",
+		"not-selectable-in-game"
+	}
+	if not dbg then
+		thing.picture = nil
+		thing.sprites = nil
+		thing.selection_box = {{0,0}, {0,0}}
+		table.insert(thing.flags, "hide-alt-info")
+	end
+	thing.hidden = true
+	thing.minable = {minable=false, mining_time=999999}
+	thing.corpse = nil
+	thing.dying_explosion = nil
+	thing.collision_box = nil
+	thing.damaged_trigger_effect = nil
+	thing.fast_replaceable_group = nil
+	thing.open_sound = nil
+	thing.close_sound = nil
+	thing.activity_led_light = nil
+	--thing.activity_led_light_offsets = nil
+	thing.activity_led_sprites = nil
+	thing.impact_category = nil
+end
+
 local cc = util.table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
 cc.name = mod_name.."cc"
-cc.flags = {"not-on-map",
-"not-rotatable", "not-flammable", "not-repairable",
-"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
-"not-in-kill-statistics", "not-in-made-in",
-"not-selectable-in-game"
-}
-if not dbg then
-	cc.sprites = nil
-	cc.selection_box = {{0,0}, {0,0}}
-	table.insert(cc.flags, "hide-alt-info")
-end
-cc.hidden = true
-cc.minable = {minable=false, mining_time=999999}
-cc.corpse = nil
-cc.dying_explosion = nil
-cc.collision_box = nil
-cc.damaged_trigger_effect = nil
-cc.fast_replaceable_group = nil
-cc.open_sound = nil
-cc.close_sound = nil
-cc.activity_led_light = nil
---cc.activity_led_light_offsets = nil
-cc.activity_led_sprites = nil
-
+make_phantom(cc)
 
 local dc = util.table.deepcopy(data.raw["decider-combinator"]["decider-combinator"])
 dc.name = mod_name.."dc"
-dc.flags = {"not-on-map",
-"not-rotatable", "not-flammable", "not-repairable",
-"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
-"not-in-kill-statistics", "not-in-made-in",
-"not-selectable-in-game"
-}
-if not dbg then
-	dc.sprites = nil
-	dc.selection_box = {{0,0}, {0,0}}
-	table.insert(dc.flags, "hide-alt-info")
-end
-dc.hidden = true
-dc.minable = {minable=false, mining_time=999999}
-dc.corpse = nil
-dc.dying_explosion = nil
-dc.collision_box = nil
-dc.damaged_trigger_effect = nil
-dc.fast_replaceable_group = nil
-dc.open_sound = nil
-dc.close_sound = nil
-dc.activity_led_light = nil
---dc.activity_led_light_offsets = nil
-dc.activity_led_sprites = nil
+make_phantom(dc)
+
+local ac = util.table.deepcopy(data.raw["arithmetic-combinator"]["arithmetic-combinator"])
+ac.name = mod_name.."ac"
+make_phantom(ac)
 
 local pc = util.table.deepcopy(data.raw["proxy-container"]["proxy-container"])
 pc.name = mod_name.."pc"
-pc.flags = {"not-on-map",
-"not-rotatable", "not-flammable", "not-repairable",
-"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
-"not-in-kill-statistics", "not-in-made-in",
-"not-selectable-in-game"
-}
-if not dbg then
-	pc.picture = nil
-	pc.selection_box = {{0,0}, {0,0}}
-	--pc.circuit_connector = nil -- might have to do this to fully hide it
-	table.insert(pc.flags, "hide-alt-info")
-end
-pc.hidden = true
-pc.minable = {minable=false, mining_time=999999}
-pc.corpse = nil
-pc.dying_explosion = nil
-pc.collision_box = nil
-pc.damaged_trigger_effect = nil
-pc.fast_replaceable_group = nil
-pc.open_sound = nil
-pc.close_sound = nil
-pc.impact_category = nil
+make_phantom(pc)
 
-data:extend({cc, dc, pc})
+data:extend({cc, dc, ac, pc})
 
 --[[
 entity = table.deepcopy(data.raw["decider-combinator"]["decider-combinator"])
