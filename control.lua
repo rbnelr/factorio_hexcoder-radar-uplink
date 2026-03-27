@@ -1,20 +1,21 @@
 --[[
--- TODO: allow access to raw inventory, request and on the way signals (should be expose these with 1 or 2 tick delay?)
-  -> user would likely want to compute them themselves, so either they add exactly one tick more and 1 tick is ideal, or they add more delay anyway
-  -> connect to 1tick is ideal, minimal hidden circuits, minimal delay, make the gui allow either status + requests at 2 tick or the raw versions at 1 tick, then put a warning somewhere
+TODO: allow access to raw inventory, request and on the way signals (should be expose these with 1 or 2 tick delay?)
+ -> user would likely want to compute them themselves, so either they add exactly one tick more and 1 tick is ideal, or they add more delay anyway
+ -> connect to 1tick is ideal, minimal hidden circuits, minimal delay, make the gui allow either status + requests at 2 tick or the raw versions at 1 tick, then put a warning somewhere
+TODO: energy use: hide combinators in power graph, or make them not use power, aceept that these signals work without power or add a (60 tick period) power check?
 
--- TODO: consider how to delete channels
--- TODO: GUI to actually add and select custom channels
+TODO: consider how to delete channels
+TODO: GUI to actually add and select custom channels
 
--- TODO: radars can currently send data to other radars without power, how to fix?
--- Seems to be impossible without polling each radar, maybe just don't care?
--- Or could alternate and update each rader every 60th tick, then dis or reconnect to hub, this might be acceptable
+TODO: radars can currently send data to other radars without power, how to fix?
+  Seems to be impossible without polling each radar, maybe just don't care?
+  Or could alternate and update each rader every 60th tick, then dis or reconnect to hub, this might be acceptable
 
--- TODO: undo/redo? seems hard
--- TODO: blueprint over? hacky workaround but maybe not that hard?
--- TODO: copy paste? not really possible to to properly (with visual feedback?); but could fake using key events? not worth it if blueprint over works I think
+TODO: undo/redo? seems hard
+TODO: blueprint over? hacky workaround but maybe not that hard?
+TODO: copy paste? not really possible to to properly (with visual feedback?); but could fake using key events? not worth it if blueprint over works I think
 
--- TODO: remove glib dependency?
+TODO: remove glib dependency?
 --]]
 
 ---@class player_index : integer
@@ -72,6 +73,8 @@ local util = require("util")
 local glib = require("__glib__/glib")
 local default_frame = require("__glib__/examples/default_frame")
 
+local dbg = settings.startup["hexcoder_radar_uplink-debug"].value
+
 local handlers = {}
 
 local function round(num)
@@ -80,7 +83,7 @@ end
 local netR = {red=true, green=false}
 local netG = {red=false, green=true}
 local W = defines.wire_connector_id
-local HIDDEN = defines.wire_origin.player -- defines.wire_origin.script
+local HIDDEN = dbg and defines.wire_origin.player or defines.wire_origin.script
 
 -- simply re-link all link hubs of this channel on all registered surfaces
 -- could be optimized by using actual linked list logic, list of surfaces with radars will be small
@@ -335,47 +338,6 @@ local function debug_vis_wires(surface, time_to_live, origin)
 end
 
 ----
-local function init(event)
-	storage.open_guis = {}
-	storage.radars = {}
-	storage.platforms = {} 
-	storage.polling_radars = {}
-	storage.polling_platforms = {}
-	storage.chsurfaces = {}
-	
-	for id, surface in pairs(game.surfaces) do
-		_surface_event(id, surface)
-	end
-end
-local function _reset(event) -- allow me to fix outdated state during dev
-	for _, player in pairs(game.players) do player.opened = nil end
-	storage.open_guis = nil
-	storage.radars = nil
-	storage.platforms = nil
-	storage.polling_radars = nil
-	storage.polling_platforms = nil
-	storage.chsurfaces = nil
-	
-	for _, s in pairs(game.surfaces) do
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-cc" }) do
-			e.destroy()
-		end
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-dc" }) do
-			e.destroy()
-		end
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-ac" }) do
-			e.destroy()
-		end
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-pc" }) do
-			e.destroy()
-		end
-	end
-	
-	init()
-end
-script.on_init(function(event)
-	init()
-end)
 
 ---@param ghost LuaEntity|BlueprintEntity
 ---@param settings RadarSettings
@@ -1147,7 +1109,7 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
 	end
 end)
 
--- tick certain things at 10x per second to conserve reduce load, is this a good idea or should we 'stagger' entity ticks?
+-- tick certain things at 10x per second to reduce load, is this a good idea or should we 'stagger' entity ticks?
 script.on_nth_tick(6, function(event)
 	for player_i, gui in pairs(storage.open_guis) do
 		local player = game.get_player(player_i) ---@cast player -nil
@@ -1163,7 +1125,51 @@ script.on_nth_tick(6, function(event)
 	end
 end)
 
----- Commands
+
+glib.register_handlers(handlers)
+
+local function init(event)
+	storage.open_guis = {}
+	storage.radars = {}
+	storage.platforms = {} 
+	storage.polling_radars = {}
+	storage.polling_platforms = {}
+	storage.chsurfaces = {}
+	
+	for id, surface in pairs(game.surfaces) do
+		_surface_event(id, surface)
+	end
+end
+local function _reset(event) -- allow me to fix outdated state during dev
+	for _, player in pairs(game.players) do player.opened = nil end
+	storage.open_guis = nil
+	storage.radars = nil
+	storage.platforms = nil
+	storage.polling_radars = nil
+	storage.polling_platforms = nil
+	storage.chsurfaces = nil
+	
+	for _, s in pairs(game.surfaces) do
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-cc" }) do
+			e.destroy()
+		end
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-dc" }) do
+			e.destroy()
+		end
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-ac" }) do
+			e.destroy()
+		end
+		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-pc" }) do
+			e.destroy()
+		end
+	end
+	
+	init()
+end
+script.on_init(function(event)
+	init()
+end)
+
 commands.add_command("hexcoder_radar_uplink-vis", nil, function(command)
 	-- debug: visualize connections
 	for _, p in pairs(game.players) do
@@ -1186,5 +1192,3 @@ end)
 commands.add_command("hexcoder_radar_uplink-reset", nil, function(command)
 	_reset()
 end)
-
-glib.register_handlers(handlers)
