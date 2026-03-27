@@ -15,6 +15,57 @@
 -- TODO: remove glib dependency?
 --]]
 
+---@class player_index : integer
+---@class unit_number : integer
+---@class platform_index : integer
+---@class surface_index : integer
+
+---@class ModStorage
+---@field open_guis table<player_index, OpenGui>
+---@field radars table<unit_number, RadarData>
+---@field platforms table<platform_index, PlatformData>
+---@field polling_radars table<unit_number, RadarData>
+---@field polling_platforms table<platform_index, PlatformData>
+---@field chsurfaces table<surface_index, SurfaceChannels>
+
+---@type ModStorage
+storage = storage
+
+---@class SurfaceChannels
+---@field nextpos number
+---@field channels table<string, Channel>
+---@field hubs LuaEntity[]
+
+---@class Channel
+---@field hub LuaEntity
+---@field link_hub LuaEntity
+---@field is_interplanetary boolean
+
+---@class OpenGui
+---@field refs table
+---@field data RadarData
+---@field drop_down_platforms platform_index[]
+
+---@class RadarSettings
+---@field mode string?
+---@field read_plat_status boolean
+---@field read_plat_statusRG integer
+---@field read_plat_requests boolean
+---@field read_plat_requestsRG integer
+---@field selected_platform platform_index?
+
+---@class RadarData
+---@field id unit_number
+---@field entity LuaEntity
+---@field S RadarSettings
+---@field dcs LuaEntity[]?
+
+---@class PlatformData
+---@field platform LuaSpacePlatform
+---@field ccs LuaEntity[]?
+---@field _prev_conn LuaSpaceConnectionPrototype?
+---@field _prev_progress number?
+
 local util = require("util")
 local glib = require("__glib__/glib")
 local default_frame = require("__glib__/examples/default_frame")
@@ -31,16 +82,15 @@ local HIDDEN = defines.wire_origin.player -- defines.wire_origin.script
 
 -- simply re-link all link hubs of this channel on all registered surfaces
 -- could be optimized by using actual linked list logic, list of surfaces with radars will be small
+---@param channel_name string
 local function update_channel_surface_links(channel_name)
-	game.print(">> update_channel_surface_links: ".. channel_name)
+	--game.print(">> update_channel_surface_links: ".. channel_name)
 	
 	local prevR = nil
 	local prevG = nil
-	for id, surfch in pairs(storage.chsurfaces) do
+	for _, surfch in pairs(storage.chsurfaces) do
 		local channel = surfch.channels[channel_name]
 		if channel then
-			local link_hub = channel.link_hub
-			
 			local h = channel.hub.get_wire_connectors(true)
 			local l = channel.link_hub.get_wire_connectors(true)
 			
@@ -64,6 +114,7 @@ local function update_channel_surface_links(channel_name)
 		end
 	end
 end
+---@param channel Channel
 local function set_is_interplanetary(channel)
 	local a = channel.hub.get_wire_connectors(true)
 	local b = channel.link_hub.get_wire_connectors(true)
@@ -76,6 +127,7 @@ local function set_is_interplanetary(channel)
 	end
 end
 
+---@param surface LuaSurface
 local function init_surf_data(surface)
 	-- lazily create surface data
 	local surfch = storage.chsurfaces[surface.index]
@@ -86,6 +138,9 @@ local function init_surf_data(surface)
 	return surfch
 end
 -- init channel for surface, if the same channel also gets created on other surface, their link_hub will be connected
+---@param surfch SurfaceChannels
+---@param channel_name string
+---@param surface LuaSurface
 local function init_channel(surfch, channel_name, surface)
 	-- lazily create channel data
 	local channel = surfch.channels[channel_name]
@@ -96,7 +151,7 @@ local function init_channel(surfch, channel_name, surface)
 		local hub = surface.create_entity{
 			name="hexcoder_radar_uplink-cc", force="player",
 			position={surfch.nextpos+0.5, 0.5}, snap_to_grid=false
-		}
+		} ---@cast hub -nil
 		hub.destructible = false
 		hub.combinator_description = "Radar signal radar hub :".. surface.name ..":".. channel_name
 		
@@ -107,7 +162,7 @@ local function init_channel(surfch, channel_name, surface)
 		local link_hub = surface.create_entity{
 			name="hexcoder_radar_uplink-cc", force="player",
 			position={surfch.nextpos+0.5, 1.5}, snap_to_grid=false
-		}
+		} ---@cast link_hub -nil
 		link_hub.destructible = false
 		link_hub.combinator_description = "Radar signal surface hub :".. surface.name ..":".. channel_name
 		
@@ -126,8 +181,10 @@ local function init_channel(surfch, channel_name, surface)
 	
 	return channel
 end
+---@param surfch SurfaceChannels
+---@param channel_name string
 local function destroy_channel(surfch, channel_name)
-	game.print(">> destroy_channel: ".. serpent.block({ surfch, channel_name }))
+	--game.print(">> destroy_channel: ".. serpent.block({ surfch, channel_name }))
 	local channel = surfch.channels[channel_name]
 	
 	channel.hub.destroy()
@@ -139,6 +196,7 @@ local function destroy_channel(surfch, channel_name)
 	update_channel_surface_links(channel_name)
 end
 
+---@param surfch SurfaceChannels
 local function leave_channel(surfch, old_hub)
 	-- delete hubs for channels once channel no longer used by using wires at hub as refcount
 	-- alternatively just make user delete old channels via gui?
@@ -159,6 +217,9 @@ local function leave_channel(surfch, old_hub)
 	--	end
 	--end
 end
+---@param entity LuaEntity
+---@param channel_name string
+---@param surface LuaSurface
 local function channel_switch(entity, channel_name, surface)
 	--game.print(">> channel_switch: ".. serpent.line({ entity, channel_name, surface }))
 	
@@ -196,9 +257,10 @@ local function channel_switch(entity, channel_name, surface)
 		conG.connect_to(cc[W.circuit_green], false, HIDDEN)
 	end
 end
+---@param entity LuaEntity
 local function update_radar_channel(entity)
 	local data = storage.radars[entity.unit_number]
-	game.print(">> update_radar_channel: ".. serpent.block(data))
+	--game.print(">> update_radar_channel: ".. serpent.block(data))
 	
 	local channel_name
 	if data and data.S.mode ~= nil then
@@ -211,7 +273,9 @@ local function update_radar_channel(entity)
 	channel_switch(entity, channel_name, entity.surface)
 end
 
-local function _surface_event(surf_id, surface) -- does not update links!
+--@param surf_id surface_index
+--@param surface LuaSurface
+local function _surface_event(surf_id, surface)
 	local surfch = storage.chsurfaces[surf_id]
 	if surfch then
 		-- delete surface data
@@ -234,7 +298,7 @@ for _, event in ipairs({
 	defines.events.on_surface_deleted,
 	defines.events.on_surface_imported,
 }) do script.on_event(event, function(event)
-	game.print(">> on_surface_event: ".. serpent.block(event))
+	--game.print(">> on_surface_event: ".. serpent.block(event))
 	_surface_event(event.surface_index, game.surfaces[event.surface_index])
 end) end
 
@@ -305,11 +369,16 @@ script.on_init(function(event)
 	init()
 end)
 
+---@param ghost LuaEntity|BlueprintEntity
+---@param settings RadarSettings
 local function set_tags(ghost, settings)
 	local tags = ghost.tags or {}
 	tags["hexcoder_radar_uplink"] = settings
 	ghost.tags = tags
 end
+---@param ghost LuaEntity|BlueprintEntity
+---@param entity_id unit_number
+---@return boolean
 local function settings_to_tags(ghost, entity_id)
 	local data = storage.radars[entity_id]
 	if data then
@@ -319,9 +388,10 @@ local function settings_to_tags(ghost, entity_id)
 	return false
 end
 
+---@param data PlatformData
 local function update_platform_status(data)
 	local plat = data.platform
-	local ctrl = data.ccs[1].get_control_behavior()
+	local ctrl = data.ccs[1].get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	
 	local signals = {}
 	-- platform index
@@ -336,7 +406,7 @@ local function update_platform_status(data)
 	-- since space connections are not supported as signals, output from/to space locations as signals with -1/-2 value
 	-- dont do 1/2 like platform hub, due to conflict with space_location, avoid using 2/3 to allow nauvis>0 as condition (use nauvis<0 to check if platform is leaving or arriving)
 	elseif plat.space_connection then
-		local conn = plat.space_connection
+		local conn = plat.space_connection ---@cast conn -nil
 		local from = conn.from
 		local to   = conn.to
 		local speed = plat.speed
@@ -385,75 +455,17 @@ local function update_platform_status(data)
 		end
 		
 		-- in transit, update in real time
-		storage.polling_platforms[data.platform.index] = true
+		storage.polling_platforms[data.platform.index] = data
 	end
 	
 	ctrl.sections[1].filters = signals
 end
---[[
--- iterate space platform hub logistic requests and compute remaining requests (items on the way are only counted once rocket is launched, i think)
--- returns as table["<quality>"]["<item_name>"] = request_count_excluding_on_the_way
-local function compute_platform_requests(to_platform, from_planet)
-
-	-- Platform hub inventory (excludes hub_trash)
-	local inv = to_platform.hub.get_inventory(defines.inventory.hub_main)
-	-- Platform hub logistic points
-	-- for hubs we have 2: { requester, passive_provider }, iterate both to be safe
-	local logi = to_platform.hub.get_logistic_point()
-	local reqests = {}
-	
-	for _, lp in ipairs(logi) do
-		
-		for _, sec in ipairs(lp.sections) do
-			--game.print(" > sec: ".. serpent.block(sec.active))
-			if sec.active then
-				for _, fil in ipairs(sec.filters) do
-					--game.print(" > fil: ".. serpent.block(fil))
-					-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
-					if fil and fil.import_from == from_planet
-						  and fil.min and fil.min > 0
-						  and fil.value and fil.value.type == "item" then
-						--game.print(" > ".. fil.value.name .." ".. fil.value.quality .." ".. fil.min)
-						
-						local q = reqests[fil.value.quality]
-						if not q then q = {}
-							reqests[fil.value.quality] = q
-						end
-						
-						local count = q[fil.value.name] or -inv.get_item_count({name=fil.value.name, quality=fil.value.quality})
-						q[fil.value.name] = count + fil.min
-					end
-				end
-			end
-		end
-		
-		-- items on the way
-		--game.print(" > targeted_items_deliver: ".. serpent.block(on_the_way))
-		for _, item in ipairs(lp.targeted_items_deliver) do
-			local q = reqests[item.quality]
-			local i = q and q[item.name]
-			if i then
-				q[item.name] = i - item.count
-			end
-		end
-	end
-	return reqests
-end
-
-local effective_requests = compute_platform_requests(platf, radar_planet)
-for quality, items in pairs(effective_requests) do
-	for item, count in pairs(items) do
-		if count > 0 then
-			table.insert(signals, { value={ type="item", name=item, quality=quality }, min=count })
-		end
-	end
-end
-]]
+---@param data PlatformData
 local function update_platform_requests_at_planet(data)
 	local plat = data.platform
 	--if not plat.space_location then return end
 	
-	local ctrl = data.ccs[2].get_control_behavior()
+	local ctrl = data.ccs[2].get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	
 	local signals = {}
 	table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
@@ -464,12 +476,13 @@ local function update_platform_requests_at_planet(data)
 	local logi = plat.hub.get_logistic_point()[1] -- access directly to avoid iteration
 	
 	if logi.filters then
-		game.print(">> filters: ")
+		--game.print(">> filters: ")
 		
 		-- this already filters by "import from" planet
 		for _, fil in ipairs(logi.filters) do
-			game.print(" > ".. serpent.line(fil))
+			--game.print(" > ".. serpent.line(fil))
 			-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
+			-- TODO: hold on, do <= 0 even show up in this version?
 			if fil.count > 0 then -- type==nil, probably because hub requests have to be items
 				table.insert(signals, {
 					value = { type="item", name=fil.name, quality=fil.quality },
@@ -481,6 +494,7 @@ local function update_platform_requests_at_planet(data)
 	
 	ctrl.sections[1].filters = signals
 end
+--[[
 local function _update_platform_requests(platform)
 	signals[3] = { value={ type="virtual", name="signal-info", quality="normal" }, min=1 }
 	local slot = 4
@@ -547,6 +561,7 @@ local function _update_platform_requests(platform)
 		end
 	end
 end
+]]
 
 script.on_event(defines.events.on_space_platform_changed_state, function (event)
 	--game.print("on_space_platform_changed_state: platf ".. event.platform.index .." new_state: ".. serpent.line(event.platform.state))
@@ -574,10 +589,15 @@ script.on_event(defines.events.on_entity_logistic_slot_changed, function (event)
 end)
 
 -- there seems to be no event for scheduled_for_deletion, so lets just stay connected until it is deleted
+---@param p LuaSpacePlatform
+---@return boolean
 local function platform_valid(p)
 	-- platforms being built don't have a hub yet
-	return p and p.valid and p.hub and p.hub.valid
+	return (p and p.valid and p.hub and p.hub.valid) or false
 end
+
+---@param platform LuaSpacePlatform
+---@return PlatformData
 local function init_platform(platform)
 	local data = storage.platforms[platform.index]
 	if not data then
@@ -604,6 +624,7 @@ local function init_platform(platform)
 	end
 	return data
 end
+---@param id platform_index
 local function reset_platform(id)
 	local data = storage.platforms[id]
 	for _,v in ipairs(data.ccs) do
@@ -624,6 +645,8 @@ end
 	still allow gui to display and modify settings by letting it remeber return data table via init_radar, which it can pass into refresh
 	keep ghost entities separate, do not insert into storage, keep and modify their data in entity.tags, but allow gui to edit it by testing for ghosts in init and refresh
 ]]
+
+---@param id unit_number
 local function reset_radar(id)
 	local data = storage.radars[id]
 	if data then
@@ -637,6 +660,7 @@ local function reset_radar(id)
 		storage.polling_radars[id] = nil
 	end
 end
+---@param data RadarData
 local function refresh_radar(data)
 	local entity = data.entity
 	local id = data.id
@@ -671,6 +695,7 @@ local function refresh_radar(data)
 	end
 	
 	local planet_sig = {type="space-location", name=entity.surface.planet.prototype.name}
+	---@type DeciderCombinatorParameters[]
 	local params = {
 		{conditions={
 			{first_signal={type="virtual", name="signal-each"}, constant=0, comparator="!=", first_signal_networks=netR}
@@ -693,7 +718,8 @@ local function refresh_radar(data)
 	             data.S.read_plat_requests and data.S.read_plat_requestsRG or 0 }
 	for i=1,2 do
 		local combinator = data.dcs[i]
-		combinator.get_control_behavior().parameters = params[i]
+		local ctrl = combinator.get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
+		ctrl.parameters = params[i]
 		local con = combinator.get_wire_connectors(true)
 		
 		con[W.combinator_output_red  ].disconnect_all(HIDDEN)
@@ -733,10 +759,15 @@ local function refresh_radar(data)
 	storage.radars[id] = data
 	storage.polling_radars[id] = (not connected) and data or nil -- poll if not connected yet due to to platform build pending
 end
+---@param entity LuaEntity
+---@param copy_settings RadarSettings?
+---@return RadarData
 local function init_radar(entity, copy_settings)
 	local S
-	if copy_settings then S = util.table.deepcopy(copy_settings)
-	elseif entity.tags then S = entity.tags["hexcoder_radar_uplink"] -- handle allowing gui from ghost entities
+	if copy_settings then
+		S = util.table.deepcopy(copy_settings)
+	elseif entity.tags then -- handle allowing gui from ghost entities
+		S = entity.tags["hexcoder_radar_uplink"]
 	else S = { -- settings
 			mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
 			read_plat_status = true,
@@ -745,7 +776,7 @@ local function init_radar(entity, copy_settings)
 			read_plat_requestsRG = 3,
 			selected_platform = nil, -- LuaSpacePlatform.index
 		}
-	end
+	end ---@cast S RadarSettings
 	
 	local id = entity.unit_number
 	local data = storage.radars[id]
@@ -762,6 +793,8 @@ end
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
 -- I think setting drop_down.items while it is open breaks it (?)
 -- Keep track of platform by LuaPlatform not name, not sure if this is ideal or if by name would be better
+---@param gui OpenGui
+---@param data RadarData
 local function radar_gui_update_platforms(gui, data)
 	-- In theory this only needs to be updated once per tick, but each player can only have one gui open anyway
 	-- duplicates work in multiplayer, but in theory players could each have different forces!
@@ -802,6 +835,8 @@ local function radar_gui_update_platforms(gui, data)
 end
 
 -- update ui from data
+---@param gui OpenGui
+---@param data RadarData
 local function radar_update_gui(gui, data)
 	radar_gui_update_platforms(gui, data)
 	
@@ -825,6 +860,7 @@ local function radar_update_gui(gui, data)
 end
 
 -- update data from ui
+---@param event EventData.on_gui_checked_state_changed
 function handlers.radar_checkbox(event)
 	local gui = storage.open_guis[event.player_index]
 	local data = gui.data
@@ -849,6 +885,7 @@ function handlers.radar_checkbox(event)
 		update_radar_channel(data.entity)
 	end
 end
+---@param event EventData.on_gui_selection_state_changed
 function handlers.radar_drop_down(event)
 	local gui = storage.open_guis[event.player_index]
 	local data = gui.data
@@ -860,11 +897,15 @@ function handlers.radar_drop_down(event)
 	radar_gui_update_platforms(gui, data)
 	refresh_radar(data)
 end
+---@param event EventData.on_gui_click
 function handlers.entity_window_close_button(event)
 	-- actually trigger entity close on close button click (calls on_gui_closed)
 	game.get_player(event.player_index).opened = nil
 end
 
+---@param player LuaPlayer
+---@param entity LuaEntity
+---@return LuaGuiElement
 local function create_radar_gui(player, entity)
 	local data = init_radar(entity)
 	
@@ -873,15 +914,15 @@ local function create_radar_gui(player, entity)
 		default_frame("hexcoder_radar_uplink", "Radar circuit connection", { button=handlers.entity_window_close_button }))
 	window.force_auto_center()
 	
-	local status_descr = "Read space platform status with unlimited range.\n"
-	.."[virtual-signal=signal-P]: Platform ID\n"
-	.."[space-location=nauvis]=1  Currently orbited planet - Check using [space-location=nauvis]>0\n"
-	.."[space-location=nauvis]=-1 [space-location=gleba]=2  Travelling on space connection [space-location=nauvis]->[space-location=gleba] - Platform travel direction is respected\n"
-	.."[space-location=aquilo]=-10  Actually targetted planet in next schedule stop\n"
-	.."[virtual-signal=signal-T]  Space connection progress in % and [virtual-signal=signal-D] in km\n"
+	local status_descr = [[Read space platform status with unlimited range.
+	[virtual-signal=signal-P]: Platform ID
+	[space-location=nauvis]=1  Currently orbited planet - Check using [space-location=nauvis]>0
+	[space-location=nauvis]=-1 [space-location=gleba]=2  Travelling on space connection [space-location=nauvis]->[space-location=gleba] - Platform travel direction is respected
+	[space-location=aquilo]=-10  Actually targetted planet in next schedule stop
+	[virtual-signal=signal-T]  Space connection progress in % and [virtual-signal=signal-D] in km]]
 	
-	local request_descr = "Read unfulfilled space platform requests.\n"
-	.."Limited to platforms in orbit - signal indicated by [virtual-signal=signal-info]\n"
+	local request_descr = [[Read unfulfilled space platform requests.
+	Limited to platforms in orbit - signal indicated by [virtual-signal=signal-info]]
 	
 	-- Convert from glib to manual 
 	
@@ -937,14 +978,14 @@ local function can_open_entity_gui(player, entity)
 	return entity.valid and player.force == entity.force and player.can_reach_entity(entity)
 end
 -- TODO: enable configuring ghosts? If that is done, can I keep settings on building correctly? via tags? will gui stay open during build process?
-script.on_event("hexcoder_radar_uplink-open-gui", function(event)
+script.on_event("hexcoder_radar_uplink-open-gui", function(event) ---@cast event EventData.CustomInputEvent
 	--game.print("open-gui: ".. serpent.block(event))
 	if not event.selected_prototype or not
 	      (event.selected_prototype.name == "radar" or event.selected_prototype.name == "entity-ghost") then
 		return
 	end
 	
-	local player = game.get_player(event.player_index)
+	local player = game.get_player(event.player_index) ---@cast player -nil
 	local entity = player.selected -- hovered entity or ghost
 	
 	local free_cursor = not (player.cursor_stack.valid_for_read or player.cursor_ghost or player.cursor_record)
@@ -972,11 +1013,13 @@ script.on_event(defines.events.on_gui_closed, function(event)
 		event.element.destroy()
 		
 		if not _skip_closing_sound then
-			local player = game.get_player(event.player_index)
+			local player = game.get_player(event.player_index) ---@cast player -nil
 			player.play_sound{ path="hexcoder_radar_uplink-close-sound" }
 		end
 	end
 end)
+---@param player LuaPlayer
+---@param gui OpenGui
 local function tick_gui(player, gui)
 	-- close custom gui once out of reach
 	if not can_open_entity_gui(player, gui.data.entity) then
@@ -988,13 +1031,6 @@ end
 
 -- for custom entities with custom settings, close any gui and call reset_radar/reset_platform
 script.on_event(defines.events.on_object_destroyed, function(event)
-	--local channel_name, surf_id = storage.hub2channel[event.useful_id]
-	--if channel_name then
-	--	on_hub_destroyed(channel_name, surf_id)
-	--	storage.hub2channel[event.useful_id] = nil
-	--	return
-	--end
-	
 	game.print("on_object_destroyed: ".. serpent.line(event))
 	for player_i, gui in pairs(storage.open_guis) do
 		-- close open entity gui if entity destroyed
@@ -1058,7 +1094,7 @@ end, {{filter = "type", type = "radar"}})
 -- on_entity_settings_pasted doesn't get called for entities with no vanilla settings :(
 
 script.on_event(defines.events.on_player_setup_blueprint, function(event)
-	local player = game.get_player(event.player_index)
+	local player = game.get_player(event.player_index) ---@cast player -nil
 	local blueprint = event.stack
 	if not blueprint or not blueprint.valid_for_read then blueprint = player.blueprint_to_setup end
 	if not blueprint or not blueprint.valid_for_read then blueprint = player.cursor_stack end
@@ -1086,15 +1122,16 @@ end)
 -- tick certain things at 10x per second to conserve reduce load, is this a good idea or should we 'stagger' entity ticks?
 script.on_nth_tick(6, function(event)
 	for player_i, gui in pairs(storage.open_guis) do
-		tick_gui(game.get_player(player_i), gui)
+		local player = game.get_player(player_i) ---@cast player -nil
+		tick_gui(player, gui)
 	end
 	
-	for id,_ in pairs(storage.polling_radars) do
-		refresh_radar(storage.radars[id])
+	for _,data in ipairs(storage.polling_radars) do
+		refresh_radar(data)
 	end
 	
-	for id,_ in pairs(storage.polling_platforms) do
-		update_platform_status(storage.platforms[id])
+	for _,data in ipairs(storage.polling_platforms) do
+		update_platform_status(data)
 	end
 end)
 
@@ -1123,3 +1160,34 @@ commands.add_command("hexcoder_radar_uplink-reset", nil, function(command)
 end)
 
 glib.register_handlers(handlers)
+
+-- the silos are loaded but not yet counted as targeted_items_deliver
+-- on this exact tick of on_rocket_launch_ordered the silo contents get added to targeted_items_deliver, and the launch animation can't be cancelled I think
+script.on_event(defines.events.on_rocket_launch_ordered , function(event)
+	--game.print("on_rocket_launch_ordered : ".. serpent.block(event))
+end)
+-- launch animation over (I think rocket silo can be filled again, now pods appear on platform surface, so landing animation)
+script.on_event(defines.events.on_rocket_launched, function(event)
+	--game.print("on_rocket_launched: ".. serpent.block(event))
+end)
+-- pods have landed, and get removed from targeted_items_deliver and added to inventory on this exact tick
+script.on_event(defines.events.on_cargo_pod_delivered_cargo , function(event)
+	--game.print("on_cargo_pod_delivered_cargo : ".. serpent.block(event))
+end)
+-- targeted_items_deliver can be assumed to not change for the target platform between these events!
+
+-- no inventoty changed event though...
+-- tricks:
+-- get_linked_inventory -> maybe can link inventory to it and read that one via circuit?
+-- just connect hidden wire and force player to live with read inventory on hub
+
+-- ProxyContainerPrototype!!
+-- 
+
+
+local function _compute(to_platform, tick)
+	--local inv = to_platform.hub.get_inventory(defines.inventory.hub_main)
+	local logi = to_platform.hub.get_logistic_point()[1]
+	game.print(" > targeted_items_deliver: ".. serpent.line({logi.targeted_items_deliver, tick}))
+	--game.print(" > targeted_items_deliver: ".. serpent.block(logi.targeted_items_deliver))
+end
