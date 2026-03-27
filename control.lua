@@ -440,10 +440,10 @@ local function update_platform_requests_at_planet(data)
 	-- Platform hub logistic points, for hubs we seem to always have 2: { requester, passive_provider }
 	local logi = plat.hub.get_logistic_point()[1]
 	if logi.filters then
-		game.print(">> filters: ")
+		--game.print(">> filters: ")
 		-- filters are already compiled (all requests for one item summed) and filtered by import_from planet (unlike raw sections)
 		for _, fil in ipairs(logi.filters) do
-			game.print(" > ".. serpent.line(fil))
+			--game.print(" > ".. serpent.line(fil))
 			-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
 			if fil.count > 0 then
 				table.insert(signals, {
@@ -1021,7 +1021,7 @@ end
 
 -- for custom entities with custom settings, close any gui and call reset_radar/reset_platform
 script.on_event(defines.events.on_object_destroyed, function(event)
-	game.print("on_object_destroyed: ".. serpent.line(event))
+	--game.print("on_object_destroyed: ".. serpent.line(event))
 	for player_i, gui in pairs(storage.open_guis) do
 		-- close open entity gui if entity destroyed
 		if event.useful_id == gui.data.id then

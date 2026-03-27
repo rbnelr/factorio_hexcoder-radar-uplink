@@ -25,9 +25,6 @@ local function make_phantom(thing)
 	thing.fast_replaceable_group = nil
 	thing.open_sound = nil
 	thing.close_sound = nil
-	thing.activity_led_light = nil
-	--thing.activity_led_light_offsets = nil
-	thing.activity_led_sprites = nil
 	thing.impact_category = nil
 	
 	if not dbg then
@@ -39,12 +36,29 @@ local function make_phantom(thing)
 		thing.selection_box = {{0,0}, {0,0}}
 		thing.draw_circuit_wires = false
 		
+		-- CC
+		thing.activity_led_light = nil
+		thing.activity_led_sprites = nil
+		--thing.activity_led_light_offsets = nil
+		-- DC
 		thing.equal_symbol_sprites = nil
-		thing.greater_or_equal_symbol_sprites = nil
 		thing.greater_symbol_sprites = nil
-		thing.less_or_equal_symbol_sprites = nil
 		thing.less_symbol_sprites = nil
+		thing.greater_or_equal_symbol_sprites = nil
+		thing.less_or_equal_symbol_sprites = nil
 		thing.not_equal_symbol_sprites = nil
+		-- AC
+		thing.plus_symbol_sprites = nil
+		thing.minus_symbol_sprites = nil
+		thing.multiply_symbol_sprites = nil
+		thing.divide_symbol_sprites = nil
+		thing.modulo_symbol_sprites = nil
+		thing.power_symbol_sprites = nil
+		thing.left_shift_symbol_sprites = nil
+		thing.right_shift_symbol_sprites = nil
+		thing.and_symbol_sprites = nil
+		thing.or_symbol_sprites = nil
+		thing.xor_symbol_sprites = nil
 	end
 end
 
