@@ -1,11 +1,5 @@
 --[[
-TODO: allow access to raw inventory, request and on the way signals (should be expose these with 1 or 2 tick delay?)
- -> user would likely want to compute them themselves, so either they add exactly one tick more and 1 tick is ideal, or they add more delay anyway
- -> connect to 1tick is ideal, minimal hidden circuits, minimal delay, make the gui allow either status + requests at 2 tick or the raw versions at 1 tick, then put a warning somewhere
-TODO: energy use: hide combinators in power graph, or make them not use power, aceept that these signals work without power or add a (60 tick period) power check?
-
-TODO: consider how to delete channels
-TODO: GUI to actually add and select custom channels
+TODO: energy use: hide combinators in power graph, or make them not use power, accept that these signals work without power or add a (60 tick period) power check?
 
 TODO: radars can currently send data to other radars without power, how to fix?
   Seems to be impossible without polling each radar, maybe just don't care?
@@ -14,14 +8,13 @@ TODO: radars can currently send data to other radars without power, how to fix?
 TODO: undo/redo? seems hard
 TODO: blueprint over? hacky workaround but maybe not that hard?
 TODO: copy paste? not really possible to to properly (with visual feedback?); but could fake using key events? not worth it if blueprint over works I think
-
-TODO: remove glib dependency?
 --]]
 
 ---@class player_index : integer
 ---@class unit_number : integer
 ---@class platform_index : integer
 ---@class surface_index : integer
+---@class channel_id : number
 
 ---@class ModStorage
 ---@field open_guis table<player_index, OpenGui>
@@ -29,7 +22,7 @@ TODO: remove glib dependency?
 ---@field platforms table<platform_index, PlatformData>
 ---@field polling_radars table<unit_number, RadarData>
 ---@field polling_platforms table<platform_index, PlatformData>
----@field chsurfaces table<surface_index, SurfaceChannels>
+---@field channels Channels
 
 ---@type ModStorage
 storage = storage
@@ -174,10 +167,14 @@ local function init(event)
 	storage.platforms = {} 
 	storage.polling_radars = {}
 	storage.polling_platforms = {}
-	storage.chsurfaces = {}
+	storage.channels = { next_id=1, map={}, surfaces={} }
 	
-	for id, surface in pairs(game.surfaces) do
-		radar_channels.on_surface_event(id, surface)
+	local ch = radar_channels.create_new_channel()
+	ch.name = "[Global]"
+	ch.is_interplanetary = false
+	
+	for _, surface in pairs(game.surfaces) do
+		radar_channels.on_surface_event(surface.index, surface)
 	end
 end
 local function _reset(event) -- allow me to fix outdated state during dev
@@ -187,7 +184,7 @@ local function _reset(event) -- allow me to fix outdated state during dev
 	storage.platforms = nil
 	storage.polling_radars = nil
 	storage.polling_platforms = nil
-	storage.chsurfaces = nil
+	storage.channels = nil
 	
 	for _, s in pairs(game.surfaces) do
 		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-cc" }) do

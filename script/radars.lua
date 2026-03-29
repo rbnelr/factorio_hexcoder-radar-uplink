@@ -1,8 +1,9 @@
 ---@class RadarSettings
----@field mode string?
+---@field mode string
 ---@field read_mode? string
 ---@field read? table<string, boolean[]>
----@field selected_platform? platform_index?
+---@field selected_platform? platform_index
+---@field selected_channel? channel_id
 
 ---@class RadarData
 ---@field id unit_number
@@ -306,10 +307,10 @@ end
 	init: call to lazily prepare custom entity settings table, called by gui open or spawing with tags
 	refresh: call once settings have been modified in gui, and called at end of init_radar
 	         when custom mode selected: spawns custom combinators, wires them up and tracks data in custom tables
-			 when vanilla mode selection: resets: despawns combinators, clears from custom tables
+			 when comms mode selection: resets: despawns combinators, clears from custom tables
 	reset: explicitly reset all custom data
 	
-	never keep entities with vanilla mode selection radar table nor have combinators for them spawned
+	never keep entities with comms mode selection radar table nor have combinators for them spawned
 	still allow gui to display and modify settings by letting it remeber return data table via init_radar, which it can pass into refresh
 	keep ghost entities separate, do not insert into storage, keep and modify their data in entity.tags, but allow gui to edit it by testing for ghosts in init and refresh
 ]]
@@ -352,9 +353,10 @@ function M.refresh_radar(data)
 		M.set_tags(entity, data.S)
 		return
 	end
-	-- delete data and spawned entities if vanilla mode
-	if data.S.mode == nil then
-		M.reset_radar(id)
+	
+	if data.S.mode ~= "platform" then
+		--M.reset_radar(id)
+		storage.radars[id] = data
 		return
 	end
 	
@@ -459,7 +461,7 @@ function M.refresh_radar(data)
 	storage.radars[id] = data
 	storage.polling_radars[id] = (not connected) and data or nil -- poll if not connected yet due to to platform build pending
 	
-	game.print("after refresh_radar: ".. serpent.block(data))
+	--game.print("after refresh_radar: ".. serpent.block(data))
 end
 ---@param entity LuaEntity
 ---@param copy_settings RadarSettings?
@@ -472,7 +474,8 @@ function M.init_radar(entity, copy_settings)
 		S = entity.tags["hexcoder_radar_uplink"]
 	else
 		S = { -- settings
-			mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
+			mode = "comms",
+			selected_channel = 1, -- "[Global]"
 		}
 	end ---@cast S RadarSettings
 	

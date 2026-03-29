@@ -2,12 +2,55 @@
 ---@field refs table
 ---@field data RadarData
 ---@field drop_down_platforms platform_index[]
+---@field drop_down_channels channel_id[]
 
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
 require("script.gui_util")
 
 local M = {}
+
+---@param gui OpenGui
+---@param data RadarData
+local function radar_gui_update_channels(gui, data)
+	-- In theory this only needs to be updated once per tick, but each player can only have one gui open anyway
+	-- duplicates work in multiplayer, but in theory players could each have different forces!
+	local drop_down_strings = {"[None]"}
+	local drop_down_channels = {0}
+	local counter = 2 -- next channel in list
+	local sel_idx = nil
+	
+	for id, ch in pairs(storage.channels.map) do
+		drop_down_strings[counter] = ch.name
+		drop_down_channels[counter] = ch.id
+		
+		if data.S.selected_channel == id then
+			sel_idx = counter
+		end
+		counter = counter+1
+	end
+	
+	drop_down_strings[counter] = "[Create new channel]"
+	drop_down_channels[counter] = -1
+	
+	if not sel_idx then
+		data.S.selected_channel = 0
+		sel_idx = 1 -- [None]
+	end
+	
+	gui.drop_down_channels = drop_down_channels
+	gui.refs.ch_drop_down.items = drop_down_strings
+	gui.refs.ch_drop_down.selected_index = sel_idx
+	
+	local ch = storage.channels.map[data.S.selected_channel]
+	gui.refs.ch_name.text = ch and ch.name or ""
+	gui.refs.ch_interplanetary.state = ch and ch.is_interplanetary or false
+	
+	local can_edit = ch ~= nil and ch.id > 1 -- can't edit [Global] channel!
+	gui.refs.ch_name.enabled = can_edit
+	gui.refs.ch_delete.enabled = can_edit
+	gui.refs.ch_interplanetary.enabled = can_edit
+end
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
 -- I think setting drop_down.items while it is open breaks it (?)
@@ -56,16 +99,17 @@ end
 ---@param gui OpenGui
 ---@param data RadarData
 local function radar_update_gui(gui, data)
+	radar_gui_update_channels(gui, data)
 	radar_gui_update_platforms(gui, data)
 	
 	local refs = gui.refs
 	local S = gui.data.S
 	
-	refs.mode1.state = (S.mode or nil) == nil
-	refs.mode2.state = (S.mode or nil) == "platforms"
+	refs.mode_comms.state = (S.mode or "comms") == "comms"
+	refs.mode_platforms.state = (S.mode or "comms") == "platforms"
 	
-	refs.vanilla_pane.visible = refs.mode1.state
-	refs.platforms_pane.visible = refs.mode2.state
+	refs.comms_pane.visible = refs.mode_comms.state
+	refs.platforms_pane.visible = refs.mode_platforms.state
 	
 	local std = S.read_mode == "std" and S.read or nil
 	local raw = S.read_mode == "raw" and S.read or nil
@@ -92,20 +136,20 @@ end
 
 -- update data from ui
 script.on_event(defines.events.on_gui_checked_state_changed, function(event)
-	game.print("on_gui_checked_state_changed: ".. serpent.block(event))
+	--game.print("on_gui_checked_state_changed: ".. serpent.block(event))
 	local gui = storage.open_guis[event.player_index]
 	local refs = gui.refs
 	local data = gui.data
 	-- build new settings to avoid storing settings not relevant to current mode
 	-- NOTE: this means keeping all settings while gui is open (stored in gui state)
 	--  but closing the gui resets settings that are in hidden panes
-	local S = {}
+	local S = { mode = data.S.mode or "comms" }
 	
-	if refs.mode2.state then S.mode = "platforms" end
-	if     event.element.name == "mode1" then S.mode = nil
-	elseif event.element.name == "mode2" then S.mode = "platforms" end
-	refs.mode1.state = S.mode == nil
-	refs.mode2.state = S.mode == "platforms"
+	if refs.mode_platforms.state then S.mode = "platforms" end
+	if     event.element.name == "mode_comms" then S.mode = "comms"
+	elseif event.element.name == "mode_platforms" then S.mode = "platforms" end
+	refs.mode_comms.state = S.mode == "comms"
+	refs.mode_platforms.state = S.mode == "platforms"
 	
 	if S.mode == "platforms" then
 		S.selected_platform = data.S.selected_platform
@@ -133,20 +177,30 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 		
 		refs.pl_std.visible = S.read_mode == "std"
 		refs.pl_raw.visible = S.read_mode == "raw"
+	else
+		S.selected_channel = data.S.selected_channel
+		
+		local ch = storage.channels.map[S.selected_channel]
+		if ch then
+			ch.is_interplanetary = refs.ch_interplanetary.state
+			radar_channels.update_is_interplanetary(ch.id)
+			radar_channels.update_radar_channel(data.entity)
+		end
 	end
 	
-	refs.vanilla_pane.visible = refs.mode1.state
-	refs.platforms_pane.visible = refs.mode2.state
+	refs.comms_pane.visible = refs.mode_comms.state
+	refs.platforms_pane.visible = refs.mode_platforms.state
 	
 	data.S = S
 	radars.refresh_radar(data)
 	
-	if event.element.name == "mode1" or event.element.name == "mode2" then
+	if event.element.name == "mode_comms" or
+	   event.element.name == "mode_platforms" then
 		radar_channels.update_radar_channel(data.entity)
 	end
 end)
 script.on_event(defines.events.on_gui_selection_state_changed, function(event)
-	game.print("on_gui_checked_state_changed: ".. serpent.block(event))
+	--game.print("on_gui_selection_state_changed: ".. serpent.block(event))
 	local gui = storage.open_guis[event.player_index]
 	local data = gui.data
 	
@@ -154,12 +208,49 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		data.S.selected_platform = gui.drop_down_platforms[event.element.selected_index]
 		
 		radar_gui_update_platforms(gui, data)
+		
+		radars.refresh_radar(data)
+	elseif event.element.name == "ch_drop_down" then
+		data.S.selected_channel = gui.drop_down_channels[event.element.selected_index]
+		
+		if data.S.selected_channel == -1 then
+			data.S.selected_channel = radar_channels.create_new_channel().id
+		end
+		
+		radar_gui_update_channels(gui, data)
+		
+		radars.refresh_radar(data)
+		
+		radar_channels.update_radar_channel(data.entity)
 	end
-	radars.refresh_radar(data)
+	
 end)
 script.on_event(defines.events.on_gui_click, function(event)
+	--game.print("on_gui_click: ".. serpent.block(event))
 	if event.element.name == "hexcoder_radar_uplink-window_close_button" then
 		game.get_player(event.player_index).opened = nil
+	elseif event.element.name == "ch_delete" then
+		local gui = storage.open_guis[event.player_index]
+		local data = gui.data
+		
+		radar_channels.destroy_channel(data.S.selected_channel)
+		
+		radar_gui_update_channels(gui, data)
+	end
+end)
+script.on_event(defines.events.on_gui_confirmed, function(event)
+	--game.print("on_gui_confirmed: ".. serpent.block(event))
+	if event.element.name == "ch_name" then
+		local gui = storage.open_guis[event.player_index]
+		local refs = gui.refs
+		local data = gui.data
+		
+		local ch = storage.channels.map[data.S.selected_channel]
+		if ch then
+			ch.name = refs.ch_name.text
+		end
+		
+		radar_gui_update_channels(gui, data)
 	end
 end)
 
@@ -167,49 +258,49 @@ end)
 ---@param entity LuaEntity
 ---@return LuaGuiElement
 local function create_radar_gui(player, entity)
-	local vanilla_text = [[Vanilla behavior
-Share signals with other radars on this surface]]
+	local comms_desc = {"tooltip.hexcoder_radar_uplink-comms_mode_desc"}
+	local platforms_desc = {"tooltip.hexcoder_radar_uplink-platforms_mode_desc"}
 	
-	local status_desc = [[Read space platform status with unlimited range
-[virtual-signal=signal-P]: Platform ID
-[space-location=nauvis]=1  Currently orbited planet - Check using [space-location=nauvis]>0
-[space-location=nauvis]=-1 [space-location=gleba]=2  Travelling on space connection [space-location=nauvis]->[space-location=gleba] - Platform travel direction is respected
-[space-location=aquilo]=-10  Actually targetted planet in next schedule stop
-[virtual-signal=signal-T]  Space connection progress in % and [virtual-signal=signal-D] in km]]
+	local status_desc = {"tooltip.hexcoder_radar_uplink-status_desc"}
+	local request_unful_req_desc = {"tooltip.hexcoder_radar_uplink-request_unful_req_desc"}
+	local request_req_desc = {"tooltip.hexcoder_radar_uplink-request_req_desc"}
+	local request_otw_desc = {"tooltip.hexcoder_radar_uplink-request_otw_desc"}
+	local request_inv_desc = {"tooltip.hexcoder_radar_uplink-request_inv_desc"}
 	
-	local request_unful_req_desc = [==[Read unfulfilled space platform requests
-Limited to platforms in orbit - additional signal [virtual-signal=signal-info] to help detect no signal from no requests
-Equivalent to requests - on_the_way - inventory but only showing positives]==]
-
-	local request_req_desc = "Raw requests as configured in platform hub logistic requests\nbut automatically filtered by import from planet"
-	local request_otw_desc = "Items 'on the way' to the platform hub via cargo pods\nfrom time rockets begins launch animation to pod having fully landed"
-	local request_inv_desc = "Space platform hub inventory"
+	local tick1 = {"tooltip.hexcoder_radar_uplink-tick1_suffix"}
+	local tick2 = {"tooltip.hexcoder_radar_uplink-tick2_suffix"}
 	
-	local tick1 = "\n(1 tick delay due to hidden combinators)"
-	local tick2 = "\n(2 tick delay due to hidden combinators)"
-	
-	local function circuit_enable(name, caption, tooltip)
+	local function circuit_enable(name, caption, tooltip, tooltip_suffix)
 		return gui_hflow{}:add{
-			--GUI{type="checkbox", name=name, caption=caption, state=false, tooltip=tooltip, style={horizontally_stretchable=true}},
-			GUI{type="label", caption=caption, tooltip=tooltip},
+			GUI{type="label", caption=caption, tooltip={"", tooltip, "\n", tooltip_suffix}},
 			GUI{type="empty-widget", style={horizontally_stretchable=true}},
-			GUI{type="checkbox", name=name.."R", caption="R", state=false},
-			GUI{type="checkbox", name=name.."G", caption="G", state=false},
+			GUI{type="checkbox", name=name.."R", caption={"gui-network-selector.red-label"}, state=false},
+			GUI{type="checkbox", name=name.."G", caption={"gui-network-selector.green-label"}, state=false},
 		}
 	end
 	
 	local config_pane = gui_vpane("config_pane"):add{
 		GUI{type="label", caption="Operation mode", style="caption_label"},
-		GUI{type="radiobutton", name="mode1", caption="Global", state=false},
-		GUI{type="radiobutton", name="mode2", caption="Platforms", state=false},
+		GUI{type="radiobutton", name="mode_comms", caption="Comms", state=false, tooltip=comms_desc},
+		GUI{type="radiobutton", name="mode_platforms", caption="Platforms", state=false, tooltip=platforms_desc},
 	}
-	local vanilla_pane = gui_vpane("vanilla_pane"):add{
-		GUI{type="label", caption=vanilla_text, style={single_line=false}}
+	local comms_pane = gui_vpane("comms_pane"):add{
+		gui_hflow{}:add{
+			GUI{type="label", caption="Channel", style={base="caption_label", margin={4,6,0,0}}},
+			GUI{type="drop-down", name="ch_drop_down", items={""}, selected_index=1 },
+		},
+		GUI{type="line", style={margin={8,0,8,0}}},
+		gui_hflow{style={bottom_margin=8}}:add{
+			GUI{type="label", caption="Name", style={margin={4,6,0,0}}},
+			GUI{type="textfield", name="ch_name", text="" }, -- default height 28
+			GUI{type="sprite-button", name="ch_delete", style={base="red_button", size={28, 28}, padding={0,0,0,0}}, sprite="utility/trash", tooltip="Delete channel" },
+		},
+		GUI{type="checkbox", name="ch_interplanetary", caption="Interplanetary", state=false, tooltip="Does this channel connect to all surfaces?" },
 	}
 	local platforms_pane = gui_vpane("platforms_pane"):add{
 		gui_hflow{}:add{
-			GUI{type="label", caption="Platform", style={base="caption_label", margin={4,5,0,0}}},
-			GUI{type="drop-down", name="pl_drop_down", caption="Mode", items={""}, selected_index=1 }
+			GUI{type="label", caption="Platform", style={base="caption_label", margin={4,6,0,0}}},
+			GUI{type="drop-down", name="pl_drop_down", items={""}, selected_index=1 },
 		},
 		GUI{type="line", style={margin={8,0,8,0}}},
 		gui_hflow{style={bottom_margin=6, horizontal_spacing=20}}:add{
@@ -217,22 +308,22 @@ Equivalent to requests - on_the_way - inventory but only showing positives]==]
 			GUI{type="radiobutton", name="pl_readRaw", caption="Raw",      state=false, tooltip="Raw read mode (1 tick delay)"},
 		},
 		gui_vflow{name="pl_std"}:add{
-			circuit_enable("pl_readSta", "Read platform status",               status_desc..tick2),
-			circuit_enable("pl_readReq", "Read platform unfulfilled requests", request_unful_req_desc..tick2),
+			circuit_enable("pl_readSta", "Read platform status",               status_desc,tick2),
+			circuit_enable("pl_readReq", "Read platform unfulfilled requests", request_unful_req_desc,tick2),
 		},
 		gui_vflow{name="pl_raw"}:add{
-			circuit_enable("pl_readRawSta", "Read platform status",       status_desc..tick1),
-			circuit_enable("pl_readRawReq", "Read platform requests",     request_req_desc..tick1),
-			circuit_enable("pl_readRawOtw", "Read platform 'on the way'", request_otw_desc..tick1),
-			circuit_enable("pl_readRawInv", "Read platform inventory",    request_inv_desc..tick1),
+			circuit_enable("pl_readRawSta", "Read platform status",       status_desc,tick1),
+			circuit_enable("pl_readRawReq", "Read platform requests",     request_req_desc,tick1),
+			circuit_enable("pl_readRawOtw", "Read platform 'on the way'", request_otw_desc,tick1),
+			circuit_enable("pl_readRawInv", "Read platform inventory",    request_inv_desc,tick1),
 		}
 	}
 	
 	local window, refs = gui_default_frame("hexcoder_radar_uplink", "Radar circuit connection", {
 		gui_hflow{style={natural_width=420, horizontal_spacing=12}}:add{
 			config_pane,
-			vanilla_pane,
-			platforms_pane,
+			comms_pane,
+			platforms_pane
 		}
 	}):add_to(player.gui.screen)
 	window.force_auto_center()
