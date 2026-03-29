@@ -1,4 +1,7 @@
 --[[
+TODO: make space age optional?
+TODO: figure out correct dependency versions?
+
 TODO: energy use: hide combinators in power graph, or make them not use power, accept that these signals work without power or add a (60 tick period) power check?
 
 TODO: radars can currently send data to other radars without power, how to fix?

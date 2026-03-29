@@ -8,5 +8,5 @@
 		"base >= 2.0.61",
 		"space-age >= 2.0.61"
 	],
-	"description": "Flexible radar circuit interface. Read space platforms status and requests to better control rocket silos. Share signals across surface via named channels, or enable interplanetary connection. Even count enemies or all entities in radar range.\nSupports dynamic target selection through circuit signals and can be customized via options.\n Suggestions welcome."
+	"description": "Flexible radar circuit interface.\nRead space platforms status and requests to better control your rocket silos.\nSend signals across surface via named channels, or enable interplanetary connection.\nSuggestions welcome."
 }
