@@ -1,16 +1,14 @@
 ---@class RadarSettings
 ---@field mode string?
----@field read_plat_status boolean
----@field read_plat_statusRG integer
----@field read_plat_requests boolean
----@field read_plat_requestsRG integer
----@field selected_platform platform_index?
+---@field read_mode? string
+---@field read? table<string, boolean[]>
+---@field selected_platform? platform_index?
 
 ---@class RadarData
 ---@field id unit_number
 ---@field entity LuaEntity
 ---@field S RadarSettings
----@field dcs LuaEntity[]?
+---@field dcs? table<string, LuaEntity>
 
 ---@class PlatformData
 ---@field platform LuaSpacePlatform
@@ -316,12 +314,25 @@ end
 	keep ghost entities separate, do not insert into storage, keep and modify their data in entity.tags, but allow gui to edit it by testing for ghosts in init and refresh
 ]]
 
+M.radar_defaults = {
+	pl_std = {
+		Sta = { true, true }, -- R, G
+		Req = { true, true },
+	},
+	pl_raw = {
+		Sta = { false, true },
+		Req = { false, true },
+		Otw = { true, false },
+		Inv = { true, false },
+	}
+}
+
 ---@param id unit_number
 function M.reset_radar(id)
 	local data = storage.radars[id]
 	if data then
 		if data.dcs then
-			for _,v in ipairs(data.dcs) do
+			for _,v in pairs(data.dcs) do
 				v.destroy()
 			end
 			data.dcs = nil -- handle open in gui case
@@ -350,71 +361,74 @@ function M.refresh_radar(data)
 	local platform = entity.force.platforms[data.S.selected_platform]
 	local plat_data = M.platform_valid(platform) and M.init_platform(platform) or nil
 	
+	local planet_sig = {type="space-location", name=entity.surface.planet.prototype.name}
+	---@type DeciderCombinatorParameters[]
+	
+	local params_sta = {conditions={
+		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator="!=", first_signal_networks=netR}
+	},outputs={
+		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
+	}}
+		
+	local params = {conditions={
+		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
+		{first_signal=planet_sig, constant=0, comparator=">", compare_type="and", first_signal_networks=netG},
+	},outputs={
+		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
+	}}
+	
+	local dc_config = {Sta=params_sta, Req=params, Otw=params, Inv=params}
+	
 	if not data.dcs then
 		data.dcs = {}
-		for i=1,2 do
-			data.dcs[i] = entity.surface.create_entity{
+		local x = entity.position.x-1.5
+		for k,params in pairs(dc_config) do
+			local dc = entity.surface.create_entity{
 				name="hexcoder_radar_uplink-dc", force=entity.force,
-				position={entity.position.x+i-2, entity.position.y+0.5}, snap_to_grid=false,
+				position={x, entity.position.y+1}, snap_to_grid=false,
 				direction=defines.direction.south
-			}
-			data.dcs[i].destructible = false
+			} ---@cast dc -nil
+			dc.destructible = false
+			
+			local ctrl = dc.get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
+			ctrl.parameters = params
+			
+			data.dcs[k] = dc
+			x = x+1
 		end
 	end
 	
-	local planet_sig = {type="space-location", name=entity.surface.planet.prototype.name}
-	---@type DeciderCombinatorParameters[]
-	local params = {
-		{conditions={
-			{first_signal={type="virtual", name="signal-each"}, constant=0, comparator="!=", first_signal_networks=netR}
-		},outputs={
-			{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
-		}},
-		
-		{conditions={
-			{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
-			{first_signal=planet_sig, constant=0, comparator=">", compare_type="and", first_signal_networks=netG},
-		},outputs={
-			{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
-		}},
-	}
-	local R = entity.get_wire_connectors(true)
-	local dcStat = data.dcs[1].get_wire_connectors(true)
-	local dcReq = data.dcs[2].get_wire_connectors(true)
+	local radar = entity.get_wire_connectors(true)
 	
-	local RG = { data.S.read_plat_status and data.S.read_plat_statusRG or 0,
-	             data.S.read_plat_requests and data.S.read_plat_requestsRG or 0 }
-	for i=1,2 do
-		local combinator = data.dcs[i]
-		local ctrl = combinator.get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
-		ctrl.parameters = params[i]
-		local con = combinator.get_wire_connectors(true)
+	for k,dc in pairs(data.dcs) do
+		local s = data.S.read[k]
+		local con = dc.get_wire_connectors(true)
 		
+		con[W.combinator_input_red  ].disconnect_all(HIDDEN)
+		con[W.combinator_input_green].disconnect_all(HIDDEN)
 		con[W.combinator_output_red  ].disconnect_all(HIDDEN)
 		con[W.combinator_output_green].disconnect_all(HIDDEN)
-		if RG[i] % 2 > 0 then con[W.combinator_output_red  ].connect_to(R[W.circuit_red  ], false, HIDDEN)  end
-		if RG[i] >= 2    then con[W.combinator_output_green].connect_to(R[W.circuit_green], false, HIDDEN)  end
+		if s and s[1] then con[W.combinator_output_red  ].connect_to(radar[W.circuit_red  ], false, HIDDEN) end
+		if s and s[2] then con[W.combinator_output_green].connect_to(radar[W.circuit_green], false, HIDDEN) end
 	end
 	
-	local dcStatR = dcStat[W.combinator_input_red]
-	local connected = plat_data and dcStatR.connection_count == 1
-		and dcStatR.connections[1].target.owner.surface == platform.surface
-	if not connected then 
-		dcStat[W.combinator_input_red  ].disconnect_all(HIDDEN)
-		dcStat[W.combinator_input_green].disconnect_all(HIDDEN)
-		dcReq[W.combinator_input_red  ].disconnect_all(HIDDEN)
-		dcReq[W.combinator_input_green].disconnect_all(HIDDEN)
+	local dcStat = data.dcs.Sta.get_wire_connectors(false)
+	local dcReq = data.dcs.Req.get_wire_connectors(false)
+	local dcOtw = data.dcs.Otw.get_wire_connectors(false)
+	local dcInv = data.dcs.Inv.get_wire_connectors(false)
+	local connected = false
+	
+	if plat_data then
+		--game.print("reconnect!")
 		
-		if plat_data then
-			--game.print("reconnect!")
-			
+		if data.S.read_mode == "std" then
 			local rStat = plat_data.readers.stat.get_wire_connectors(true)
 			local rReq = plat_data.readers.req.get_wire_connectors(true)
 			local rOtw = plat_data.readers.otw_neg.get_wire_connectors(true)
 			local rInv = plat_data.readers.inv_neg.get_wire_connectors(true)
 			
 			-- platform status to platform status on red wire
-			dcStatR.connect_to(rStat[W.combinator_output_red], false, HIDDEN)
+			dcStat[W.combinator_input_red].connect_to(rStat[W.combinator_output_red], false, HIDDEN)
 			
 			-- platform raw requests to request on red wire
 			-- platform status to requests on green wire for planet check
@@ -422,13 +436,30 @@ function M.refresh_radar(data)
 			dcReq[W.combinator_input_red].connect_to(rOtw[W.combinator_output_red], false, HIDDEN)
 			dcReq[W.combinator_input_red].connect_to(rInv[W.combinator_output_red], false, HIDDEN)
 			dcReq[W.combinator_input_green].connect_to(rStat[W.combinator_output_green], false, HIDDEN)
+		else
+			local rStat = plat_data.readers.stat_raw.get_wire_connectors(true)
+			local rReq = plat_data.readers.req_raw.get_wire_connectors(true)
+			local rOtw = plat_data.readers.otw_raw.get_wire_connectors(true)
+			local rInv = plat_data.readers.inv_raw.get_wire_connectors(true)
 			
-			connected = true
+			-- platform status to platform status on red wire
+			dcStat[W.combinator_input_red].connect_to(rStat[W.circuit_red], false, HIDDEN)
+			dcReq[W.combinator_input_red].connect_to(rReq[W.circuit_red], false, HIDDEN)
+			dcOtw[W.combinator_input_red].connect_to(rOtw[W.circuit_red], false, HIDDEN)
+			dcInv[W.combinator_input_red].connect_to(rInv[W.circuit_red], false, HIDDEN)
+			
+			dcReq[W.combinator_input_green].connect_to(rStat[W.circuit_green], false, HIDDEN)
+			dcOtw[W.combinator_input_green].connect_to(rStat[W.circuit_green], false, HIDDEN)
+			dcInv[W.combinator_input_green].connect_to(rStat[W.circuit_green], false, HIDDEN)
 		end
+		
+		connected = true
 	end
 	
 	storage.radars[id] = data
 	storage.polling_radars[id] = (not connected) and data or nil -- poll if not connected yet due to to platform build pending
+	
+	game.print("after refresh_radar: ".. serpent.block(data))
 end
 ---@param entity LuaEntity
 ---@param copy_settings RadarSettings?
@@ -439,13 +470,9 @@ function M.init_radar(entity, copy_settings)
 		S = util.table.deepcopy(copy_settings)
 	elseif entity.tags then -- handle allowing gui from ghost entities
 		S = entity.tags["hexcoder_radar_uplink"]
-	else S = { -- settings
+	else
+		S = { -- settings
 			mode = nil, -- nil: default circuit sharing mode, "platforms": circuits read platforms
-			read_plat_status = true,
-			read_plat_statusRG = 3,
-			read_plat_requests = true,
-			read_plat_requestsRG = 3,
-			selected_platform = nil, -- LuaSpacePlatform.index
 		}
 	end ---@cast S RadarSettings
 	

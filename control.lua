@@ -177,7 +177,7 @@ local function init(event)
 	storage.chsurfaces = {}
 	
 	for id, surface in pairs(game.surfaces) do
-		radar_channels._surface_event(id, surface)
+		radar_channels.on_surface_event(id, surface)
 	end
 end
 local function _reset(event) -- allow me to fix outdated state during dev

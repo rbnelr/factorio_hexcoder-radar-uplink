@@ -3,12 +3,10 @@
 ---@field data RadarData
 ---@field drop_down_platforms platform_index[]
 
-local glib = require("__glib__/glib")
-local default_frame = require("__glib__/examples/default_frame")
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
+require("script.gui_util")
 
-local handlers = {}
 local M = {}
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
@@ -29,12 +27,11 @@ local function radar_gui_update_platforms(gui, data)
 		for i, platf in pairs(force.platforms) do
 			--game.print(" > ".. i .."platform ".. platf.name)
 			
-			local name = platf.name
-			if not radars.platform_valid(platf) then name = name.." (Not fully built)"
-			elseif platf.scheduled_for_deletion ~= 0 then name =
-				name.." [color=#f00000][virtual-signal=signal-trash-bin] (Scheduled for deletion)[/color]" end
+			local suffix = ""
+			if not radars.platform_valid(platf) then suffix = " (Not fully built)"
+			elseif platf.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000][virtual-signal=signal-trash-bin] (Scheduled for deletion)[/color]" end
 			
-			drop_down_strings[counter] = name
+			drop_down_strings[counter] = platf.name..suffix
 			drop_down_platforms[counter] = platf.index
 			
 			-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
@@ -51,29 +48,42 @@ local function radar_gui_update_platforms(gui, data)
 	end
 	
 	gui.drop_down_platforms = drop_down_platforms
-	gui.refs.platform_drop_down.items = drop_down_strings
-	gui.refs.platform_drop_down.selected_index = sel_idx
+	gui.refs.pl_drop_down.items = drop_down_strings
+	gui.refs.pl_drop_down.selected_index = sel_idx
 end
 
--- update ui from data
+-- init ui from data
 ---@param gui OpenGui
 ---@param data RadarData
 local function radar_update_gui(gui, data)
 	radar_gui_update_platforms(gui, data)
 	
-	gui.refs.mode1.state = data.S.mode == nil
-	gui.refs.mode2.state = data.S.mode == "platforms"
+	local refs = gui.refs
+	local S = gui.data.S
 	
-	gui.refs.option1.state = data.S.read_plat_status
-	gui.refs.option2.state = data.S.read_plat_requests
+	refs.mode1.state = (S.mode or nil) == nil
+	refs.mode2.state = (S.mode or nil) == "platforms"
 	
-	gui.refs.option1R.state = data.S.read_plat_statusRG % 2 > 0
-	gui.refs.option1G.state = data.S.read_plat_statusRG >= 2
-	gui.refs.option2R.state = data.S.read_plat_requestsRG % 2 > 0
-	gui.refs.option2G.state = data.S.read_plat_requestsRG >= 2
+	refs.vanilla_pane.visible = refs.mode1.state
+	refs.platforms_pane.visible = refs.mode2.state
 	
-	gui.refs.vanilla_pane.visible = gui.refs.mode1.state
-	gui.refs.platforms_pane.visible = gui.refs.mode2.state
+	local std = S.read_mode == "std" and S.read or nil
+	local raw = S.read_mode == "raw" and S.read or nil
+	
+	refs.pl_readStd.state = S.read_mode ~= "raw"
+	refs.pl_readRaw.state = S.read_mode == "raw"
+	
+	refs.pl_std.visible = refs.pl_readStd.state
+	refs.pl_raw.visible = refs.pl_readRaw.state
+	
+	for k,v in pairs(std or radars.radar_defaults.pl_std) do
+		refs["pl_read"..k.."R"].state = v[1]
+		refs["pl_read"..k.."G"].state = v[2]
+	end
+	for k,v in pairs(raw or radars.radar_defaults.pl_raw) do
+		refs["pl_readRaw"..k.."R"].state = v[1]
+		refs["pl_readRaw"..k.."G"].state = v[2]
+	end
 	
 	-- radar_gui_update_platforms can reset selected_platform
 	-- this causes a radar refresh every time the gui is opened, which is probably a good idea anywy
@@ -81,110 +91,153 @@ local function radar_update_gui(gui, data)
 end
 
 -- update data from ui
----@param event EventData.on_gui_checked_state_changed
-function handlers.radar_checkbox(event)
+script.on_event(defines.events.on_gui_checked_state_changed, function(event)
+	game.print("on_gui_checked_state_changed: ".. serpent.block(event))
 	local gui = storage.open_guis[event.player_index]
+	local refs = gui.refs
 	local data = gui.data
+	-- build new settings to avoid storing settings not relevant to current mode
+	-- NOTE: this means keeping all settings while gui is open (stored in gui state)
+	--  but closing the gui resets settings that are in hidden panes
+	local S = {}
 	
-	if     event.element.name == "mode1" then data.S.mode = nil
-	elseif event.element.name == "mode2" then data.S.mode = "platforms"
-	elseif event.element.name == "option1" then data.S.read_plat_status = event.element.state
-	elseif event.element.name == "option2" then data.S.read_plat_requests = event.element.state end
+	if refs.mode2.state then S.mode = "platforms" end
+	if     event.element.name == "mode1" then S.mode = nil
+	elseif event.element.name == "mode2" then S.mode = "platforms" end
+	refs.mode1.state = S.mode == nil
+	refs.mode2.state = S.mode == "platforms"
 	
-	data.S.read_plat_statusRG   = (gui.refs.option1R.state and 1 or 0) + (gui.refs.option1G.state and 2 or 0)
-	data.S.read_plat_requestsRG = (gui.refs.option2R.state and 1 or 0) + (gui.refs.option2G.state and 2 or 0)
+	if S.mode == "platforms" then
+		S.selected_platform = data.S.selected_platform
+		
+		local raw = refs.pl_readRaw.state
+		if     event.element.name == "pl_readStd" then raw = false
+		elseif event.element.name == "pl_readRaw" then raw = true end
+		refs.pl_readStd.state = raw == false
+		refs.pl_readRaw.state = raw == true
+		
+		S.read_mode = raw and "raw" or "std"
+		local state = {}
+		if raw == false then
+			for k,_ in pairs(radars.radar_defaults.pl_std) do
+				state[k] = { refs["pl_read"..k.."R"].state,
+				             refs["pl_read"..k.."G"].state }
+			end
+		else
+			for k,_ in pairs(radars.radar_defaults.pl_raw) do
+				state[k] = { refs["pl_readRaw"..k.."R"].state,
+				             refs["pl_readRaw"..k.."G"].state }
+			end
+		end
+		S.read = state
+		
+		refs.pl_std.visible = S.read_mode == "std"
+		refs.pl_raw.visible = S.read_mode == "raw"
+	end
 	
-	gui.refs.mode1.state = data.S.mode == nil
-	gui.refs.mode2.state = data.S.mode == "platforms"
+	refs.vanilla_pane.visible = refs.mode1.state
+	refs.platforms_pane.visible = refs.mode2.state
 	
-	gui.refs.vanilla_pane.visible = gui.refs.mode1.state
-	gui.refs.platforms_pane.visible = gui.refs.mode2.state
-	
+	data.S = S
 	radars.refresh_radar(data)
 	
 	if event.element.name == "mode1" or event.element.name == "mode2" then
 		radar_channels.update_radar_channel(data.entity)
 	end
-end
----@param event EventData.on_gui_selection_state_changed
-function handlers.radar_drop_down(event)
+end)
+script.on_event(defines.events.on_gui_selection_state_changed, function(event)
+	game.print("on_gui_checked_state_changed: ".. serpent.block(event))
 	local gui = storage.open_guis[event.player_index]
 	local data = gui.data
 	
-	if event.element.name == "platform_drop_down" then
+	if event.element.name == "pl_drop_down" then
 		data.S.selected_platform = gui.drop_down_platforms[event.element.selected_index]
+		
+		radar_gui_update_platforms(gui, data)
 	end
-	
-	radar_gui_update_platforms(gui, data)
 	radars.refresh_radar(data)
-end
----@param event EventData.on_gui_click
-function handlers.entity_window_close_button(event)
-	-- actually trigger entity close on close button click (calls on_gui_closed)
-	game.get_player(event.player_index).opened = nil
-end
+end)
+script.on_event(defines.events.on_gui_click, function(event)
+	if event.element.name == "hexcoder_radar_uplink-window_close_button" then
+		game.get_player(event.player_index).opened = nil
+	end
+end)
 
 ---@param player LuaPlayer
 ---@param entity LuaEntity
 ---@return LuaGuiElement
 local function create_radar_gui(player, entity)
-	local data = radars.init_radar(entity)
+	local vanilla_text = [[Vanilla behavior
+Share signals with other radars on this surface]]
 	
-	-- TODO: cursor is not finger pointer on draggable titlebar like with built in guis?
-	local window, refs = glib.add(player.gui.screen,
-		default_frame("hexcoder_radar_uplink", "Radar circuit connection", { button=handlers.entity_window_close_button }))
+	local status_desc = [[Read space platform status with unlimited range
+[virtual-signal=signal-P]: Platform ID
+[space-location=nauvis]=1  Currently orbited planet - Check using [space-location=nauvis]>0
+[space-location=nauvis]=-1 [space-location=gleba]=2  Travelling on space connection [space-location=nauvis]->[space-location=gleba] - Platform travel direction is respected
+[space-location=aquilo]=-10  Actually targetted planet in next schedule stop
+[virtual-signal=signal-T]  Space connection progress in % and [virtual-signal=signal-D] in km]]
+	
+	local request_unful_req_desc = [==[Read unfulfilled space platform requests
+Limited to platforms in orbit - additional signal [virtual-signal=signal-info] to help detect no signal from no requests
+Equivalent to requests - on_the_way - inventory but only showing positives]==]
+
+	local request_req_desc = "Raw requests as configured in platform hub logistic requests\nbut automatically filtered by import from planet"
+	local request_otw_desc = "Items 'on the way' to the platform hub via cargo pods\nfrom time rockets begins launch animation to pod having fully landed"
+	local request_inv_desc = "Space platform hub inventory"
+	
+	local tick1 = "\n(1 tick delay due to hidden combinators)"
+	local tick2 = "\n(2 tick delay due to hidden combinators)"
+	
+	local function circuit_enable(name, caption, tooltip)
+		return gui_hflow{}:add{
+			--GUI{type="checkbox", name=name, caption=caption, state=false, tooltip=tooltip, style={horizontally_stretchable=true}},
+			GUI{type="label", caption=caption, tooltip=tooltip},
+			GUI{type="empty-widget", style={horizontally_stretchable=true}},
+			GUI{type="checkbox", name=name.."R", caption="R", state=false},
+			GUI{type="checkbox", name=name.."G", caption="G", state=false},
+		}
+	end
+	
+	local config_pane = gui_vpane("config_pane"):add{
+		GUI{type="label", caption="Operation mode", style="caption_label"},
+		GUI{type="radiobutton", name="mode1", caption="Global", state=false},
+		GUI{type="radiobutton", name="mode2", caption="Platforms", state=false},
+	}
+	local vanilla_pane = gui_vpane("vanilla_pane"):add{
+		GUI{type="label", caption=vanilla_text, style={single_line=false}}
+	}
+	local platforms_pane = gui_vpane("platforms_pane"):add{
+		gui_hflow{}:add{
+			GUI{type="label", caption="Platform", style={base="caption_label", margin={4,5,0,0}}},
+			GUI{type="drop-down", name="pl_drop_down", caption="Mode", items={""}, selected_index=1 }
+		},
+		GUI{type="line", style={margin={8,0,8,0}}},
+		gui_hflow{style={bottom_margin=6, horizontal_spacing=20}}:add{
+			GUI{type="radiobutton", name="pl_readStd", caption="Standard", state=false, tooltip="Standard read mode (2 tick delay)"},
+			GUI{type="radiobutton", name="pl_readRaw", caption="Raw",      state=false, tooltip="Raw read mode (1 tick delay)"},
+		},
+		gui_vflow{name="pl_std"}:add{
+			circuit_enable("pl_readSta", "Read platform status",               status_desc..tick2),
+			circuit_enable("pl_readReq", "Read platform unfulfilled requests", request_unful_req_desc..tick2),
+		},
+		gui_vflow{name="pl_raw"}:add{
+			circuit_enable("pl_readRawSta", "Read platform status",       status_desc..tick1),
+			circuit_enable("pl_readRawReq", "Read platform requests",     request_req_desc..tick1),
+			circuit_enable("pl_readRawOtw", "Read platform 'on the way'", request_otw_desc..tick1),
+			circuit_enable("pl_readRawInv", "Read platform inventory",    request_inv_desc..tick1),
+		}
+	}
+	
+	local window, refs = gui_default_frame("hexcoder_radar_uplink", "Radar circuit connection", {
+		gui_hflow{style={natural_width=420, horizontal_spacing=12}}:add{
+			config_pane,
+			vanilla_pane,
+			platforms_pane,
+		}
+	}):add_to(player.gui.screen)
 	window.force_auto_center()
 	
-	local status_descr = [[Read space platform status with unlimited range.
-	[virtual-signal=signal-P]: Platform ID
-	[space-location=nauvis]=1  Currently orbited planet - Check using [space-location=nauvis]>0
-	[space-location=nauvis]=-1 [space-location=gleba]=2  Travelling on space connection [space-location=nauvis]->[space-location=gleba] - Platform travel direction is respected
-	[space-location=aquilo]=-10  Actually targetted planet in next schedule stop
-	[virtual-signal=signal-T]  Space connection progress in % and [virtual-signal=signal-D] in km]]
-	
-	local request_descr = [[Read unfulfilled space platform requests.
-	Limited to platforms in orbit - signal indicated by [virtual-signal=signal-info]]
-	
-	-- Convert from glib to manual 
-	
-	-- TODO: tooltips with explanations
-	local frame, refs = glib.add(window, {
-		args={type = "flow", direction = "horizontal"},
-		style_mods = { natural_width=420 },
-		children = {
-			{args={type = "frame", direction = "vertical", style = "inside_shallow_frame_with_padding"}, style_mods={right_margin=8}, children={
-				{args={type = "label", caption = "Operation mode", style="caption_label"}},
-				{args={type = "radiobutton", name = "mode1", caption = "Global", state=true}, _checked_state_changed = handlers.radar_checkbox },
-				{args={type = "radiobutton", name = "mode2", caption = "Platforms", state=false}, _checked_state_changed = handlers.radar_checkbox },
-			}},
-			{args={type = "frame", direction = "vertical", name="vanilla_pane", style = "inside_shallow_frame_with_padding"}, children={
-				{args={type = "label", caption = "Vanilla behavior\nShare signals with other radars on this surface"}, style_mods={single_line=false}},
-			}},
-			{args={type = "frame", direction = "vertical", name="platforms_pane", style = "inside_shallow_frame_with_padding", visible=false}, children={
-				{args={type = "flow", direction = "horizontal"}, children={
-					{args={type = "label", caption = "Platform", style="caption_label"}, style_mods={margin={4, 5, 0, 0}} },
-					{args={type = "drop-down", name = "platform_drop_down", caption = "Mode", items = {""}, selected_index = 1 },
-					  style_mods={bottom_margin=5},
-					  _selection_state_changed = handlers.radar_drop_down }
-				}},
-				{args={type = "flow", direction = "vertical"}, children={
-					{args={type = "line"}},
-					{args={type = "flow", direction = "horizontal"}, style_mods={top_margin=5}, children={
-						{args={type = "checkbox", name = "option1", caption = "Read platform status", state=false, tooltip=status_descr},
-						  style_mods={horizontally_stretchable=true}, _checked_state_changed = handlers.radar_checkbox },
-						{args={type = "checkbox", name = "option1R", caption = "R", state=false}, _checked_state_changed = handlers.radar_checkbox },
-						{args={type = "checkbox", name = "option1G", caption = "G", state=false}, _checked_state_changed = handlers.radar_checkbox },
-					}},
-					{args={type = "flow", direction = "horizontal"}, children={
-						{args={type = "checkbox", name = "option2", caption = "Read platform requests", state=false, tooltip=request_descr}, style_mods={horizontally_stretchable=true}, _checked_state_changed = handlers.radar_checkbox },
-						{args={type = "checkbox", name = "option2R", caption = "R", state=false}, _checked_state_changed = handlers.radar_checkbox },
-						{args={type = "checkbox", name = "option2G", caption = "G", state=false}, _checked_state_changed = handlers.radar_checkbox },
-					}},
-				}}
-			}},
-		}
-	}, refs)
-	
+	local data = radars.init_radar(entity)
 	local gui = { refs=refs, data=data }
 	storage.open_guis[player.index] = gui
 	
@@ -250,5 +303,4 @@ function M.tick_gui(player, gui)
 	end
 end
 
-glib.register_handlers(handlers)
 return M
