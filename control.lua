@@ -20,12 +20,16 @@ TODO: copy paste? not really possible to to properly (with visual feedback?); bu
 ---@class channel_id : number
 
 ---@class ModStorage
+---@field settings ModSettings
 ---@field open_guis table<player_index, OpenGui>
 ---@field radars table<unit_number, RadarData>
 ---@field platforms table<platform_index, PlatformData>
 ---@field polling_radars table<unit_number, RadarData>
 ---@field polling_platforms table<platform_index, PlatformData>
 ---@field channels Channels
+
+---@class ModSettings
+---@field allow_interpl boolean
 
 ---@type ModStorage
 storage = storage
@@ -165,6 +169,9 @@ end)
 ---- init
 
 local function init(event)
+	storage.settings = {
+		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
+	}
 	storage.open_guis = {}
 	storage.radars = {}
 	storage.platforms = {} 
@@ -182,6 +189,7 @@ local function init(event)
 end
 local function _reset(event) -- allow me to fix outdated state during dev
 	for _, player in pairs(game.players) do player.opened = nil end
+	storage.settings = nil
 	storage.open_guis = nil
 	storage.radars = nil
 	storage.platforms = nil
@@ -208,6 +216,15 @@ local function _reset(event) -- allow me to fix outdated state during dev
 end
 script.on_init(function(event)
 	init()
+end)
+
+script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
+	if event.setting == "hexcoder_radar_uplink-allow_interplanetary_comms" then
+		storage.settings.allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
+		
+		radars.refresh_all_custom_radars()
+		radar_channels.update_all_channels_is_interplanetary()
+	end
 end)
 
 ---- debugging

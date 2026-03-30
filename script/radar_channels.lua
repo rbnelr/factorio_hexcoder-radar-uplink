@@ -29,6 +29,8 @@ local function update_channel_surface_links(id)
 	local channel = storage.channels.map[id]
 	if not channel then return end
 	
+	channel.is_interplanetary = channel.is_interplanetary and storage.settings.allow_interpl
+	
 	local prevR = nil
 	local prevG = nil
 	for _, surf in pairs(storage.channels.surfaces) do
@@ -58,8 +60,13 @@ local function update_channel_surface_links(id)
 	end
 end
 function M.update_is_interplanetary(id)
-	-- Abuse this to switch is_interplanetary, but could be done more efficiently
+	-- Abuse this to switch is_interplanetary, could be done more efficiently
 	update_channel_surface_links(id)
+end
+function M.update_all_channels_is_interplanetary()
+	for id,_ in pairs(storage.channels.map) do
+		M.update_is_interplanetary(id)
+	end
 end
 
 ---@return Channel
@@ -100,9 +107,10 @@ end
 -- init channel for surface, if the same channel get connected to from other surface, their link_hub will be connected
 ---@param surface LuaSurface
 ---@param id channel_id
----@return ChannelHubs
+---@return ChannelHubs?
 local function init_channel(surface, id)
 	local channel = storage.channels.map[id]
+	if not channel then return nil end -- blueprinting not correct for channels
 	
 	-- lazily create surface data
 	local surf = storage.channels.surfaces[surface.index]
@@ -119,7 +127,7 @@ local function init_channel(surface, id)
 		-- If mod deinstalled, this hub disappears and automatically removes all hidden radar wires (and vanilla links reappear)!
 		local hub = surface.create_entity{
 			name="hexcoder_radar_uplink-cc", force="player",
-			position={channel.id+0.5, 0.5}, snap_to_grid=false
+			position={id+0.5, 0.5}, snap_to_grid=false
 		} ---@cast hub -nil
 		hub.destructible = false
 		hub.combinator_description = "Radar signal radar hub :".. surface.name ..":".. id
@@ -130,7 +138,7 @@ local function init_channel(surface, id)
 		-- (If single hub existed, update_channel_surface_links() would need to be called on interplanetary toggle, and may have to iterate countless radar wires to find ones to remove)
 		local link_hub = surface.create_entity{
 			name="hexcoder_radar_uplink-cc", force="player",
-			position={channel.id+0.5, 1.5}, snap_to_grid=false
+			position={id+0.5, 1.5}, snap_to_grid=false
 		} ---@cast link_hub -nil
 		link_hub.destructible = false
 		link_hub.combinator_description = "Radar signal surface hub :".. surface.name ..":".. id
@@ -174,10 +182,11 @@ local function channel_switch(entity, id, surface)
 	if id > 0 then -- 0 is [None] channel
 		-- enter channel
 		local hubs = init_channel(surface, id)
-		
-		local cc = hubs.hub.get_wire_connectors(true)
-		conR.connect_to(cc[W.circuit_red  ], false, HIDDEN)
-		conG.connect_to(cc[W.circuit_green], false, HIDDEN)
+		if hubs then
+			local cc = hubs.hub.get_wire_connectors(true)
+			conR.connect_to(cc[W.circuit_red  ], false, HIDDEN)
+			conG.connect_to(cc[W.circuit_green], false, HIDDEN)
+		end
 	end
 end
 ---@param entity LuaEntity

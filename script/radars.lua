@@ -34,7 +34,14 @@ end
 function M.settings_to_tags(ghost, entity_id)
 	local data = storage.radars[entity_id]
 	if data then
-		M.set_tags(ghost, data.S)
+		-- storing selected_channel does not work if channel is deleted afterwards or blueprint is pasted in other savegame!
+		-- avoid nonsensical channel selection
+		-- TODO: return channels to be by-name and update radars on channel rename?
+		--       or store channel name for blueprint etc. and do lookup / lazy create channels on tags->settings
+		--       but in then technically is_interplanetary setting would have to be stored too
+		local settings = util.table.deepcopy(data.S)
+		settings.selected_channel = nil
+		M.set_tags(ghost, settings)
 		return true
 	end
 	return false
@@ -342,58 +349,56 @@ function M.reset_radar(id)
 		storage.polling_radars[id] = nil
 	end
 end
+
+---@param id unit_number
+---@param entity LuaEntity
 ---@param data RadarData
-function M.refresh_radar(data)
-	local entity = data.entity
-	local id = data.id
-	--game.print("refresh_radar: ".. serpent.block(data))
-	
-	-- write tags to ghosts on change (ui seems to get a copy, possibly because entity.tags is behind API which copies)
-	if entity.type == "entity-ghost" then
-		M.set_tags(entity, data.S)
-		return
-	end
-	
-	if data.S.mode ~= "platform" then
-		--M.reset_radar(id)
-		storage.radars[id] = data
-		return
-	end
-	
+local function refresh_platform_radar(id, entity, data)
 	local platform = entity.force.platforms[data.S.selected_platform]
 	local plat_data = M.platform_valid(platform) and M.init_platform(platform) or nil
 	
 	local planet_sig = {type="space-location", name=entity.surface.planet.prototype.name}
 	---@type DeciderCombinatorParameters[]
 	
+	-- Status DC just passes along info (1-tick delay one-way signal bridge)
 	local params_sta = {conditions={
 		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator="!=", first_signal_networks=netR}
 	},outputs={
 		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
 	}}
-		
-	local params = {conditions={
+	
+	-- Unfulfilled requests or if not allowing interplanetary comms:
+	-- Requests, On-the-way, Inventory DCs only pass info if platform is orbiting radar surface
+	local params_detail = {conditions={
 		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
 		{first_signal=planet_sig, constant=0, comparator=">", compare_type="and", first_signal_networks=netG},
 	},outputs={
 		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
 	}}
+	-- If allowing interplanetary comms:
+	-- Requests, On-the-way, Inventory DCs only pass on all info (note that requests still depend on which planet is being orbited)
+	local params_detail_interpl = {conditions={
+		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
+	},outputs={
+		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
+	}}
 	
-	local dc_config = {Sta=params_sta, Req=params, Otw=params, Inv=params}
+	if storage.settings.allow_interpl and data.S.read_mode == "raw" then
+		params_detail = params_detail_interpl
+	end
+	
+	local dc_config = {Sta=params_sta, Req=params_detail, Otw=params_detail, Inv=params_detail}
 	
 	if not data.dcs then
 		data.dcs = {}
 		local x = entity.position.x-1.5
-		for k,params in pairs(dc_config) do
+		for k,_ in pairs(dc_config) do
 			local dc = entity.surface.create_entity{
 				name="hexcoder_radar_uplink-dc", force=entity.force,
 				position={x, entity.position.y+1}, snap_to_grid=false,
 				direction=defines.direction.south
 			} ---@cast dc -nil
 			dc.destructible = false
-			
-			local ctrl = dc.get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
-			ctrl.parameters = params
 			
 			data.dcs[k] = dc
 			x = x+1
@@ -402,16 +407,21 @@ function M.refresh_radar(data)
 	
 	local radar = entity.get_wire_connectors(true)
 	
-	for k,dc in pairs(data.dcs) do
-		local s = data.S.read[k]
+	for k,params in pairs(dc_config) do
+		local dc = data.dcs[k]
+		
+		local ctrl = data.dcs[k].get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
+		ctrl.parameters = params
+		
+		local rg = data.S.read[k]
 		local con = dc.get_wire_connectors(true)
 		
 		con[W.combinator_input_red  ].disconnect_all(HIDDEN)
 		con[W.combinator_input_green].disconnect_all(HIDDEN)
 		con[W.combinator_output_red  ].disconnect_all(HIDDEN)
 		con[W.combinator_output_green].disconnect_all(HIDDEN)
-		if s and s[1] then con[W.combinator_output_red  ].connect_to(radar[W.circuit_red  ], false, HIDDEN) end
-		if s and s[2] then con[W.combinator_output_green].connect_to(radar[W.circuit_green], false, HIDDEN) end
+		if rg and rg[1] then con[W.combinator_output_red  ].connect_to(radar[W.circuit_red  ], false, HIDDEN) end
+		if rg and rg[2] then con[W.combinator_output_green].connect_to(radar[W.circuit_green], false, HIDDEN) end
 	end
 	
 	local dcStat = data.dcs.Sta.get_wire_connectors(false)
@@ -458,8 +468,39 @@ function M.refresh_radar(data)
 		connected = true
 	end
 	
-	storage.radars[id] = data
 	storage.polling_radars[id] = (not connected) and data or nil -- poll if not connected yet due to to platform build pending
+end
+
+---@param data RadarData
+function M.refresh_radar(data)
+	local entity = data.entity
+	local id = data.id
+	--game.print("refresh_radar: ".. serpent.block(data))
+	
+	-- write tags to ghosts on change (ui seems to get a copy, possibly because entity.tags is behind API which copies)
+	if entity.type == "entity-ghost" then
+		M.set_tags(entity, data.S)
+		return
+	end
+	
+	if data.S.mode == "comms" then
+		if data.dcs then
+			for _,v in pairs(data.dcs) do
+				v.destroy()
+			end
+			data.dcs = nil -- handle open in gui case
+		end
+		
+		if data.S.selected_channel == 1 then -- "[Global]"
+			M.reset_radar(id)
+		else
+			storage.radars[id] = data
+			storage.polling_radars[id] = nil
+		end
+	elseif data.S.mode == "platforms" then
+		refresh_platform_radar(id, entity, data)
+		storage.radars[id] = data
+	end
 	
 	--game.print("after refresh_radar: ".. serpent.block(data))
 end
@@ -473,6 +514,8 @@ function M.init_radar(entity, copy_settings)
 	elseif entity.tags then -- handle allowing gui from ghost entities
 		S = entity.tags["hexcoder_radar_uplink"]
 	else
+		-- default settings if radar not registered in storage
+		-- Vanilla-equivalent global comms mode
 		S = { -- settings
 			mode = "comms",
 			selected_channel = 1, -- "[Global]"
@@ -489,6 +532,12 @@ function M.init_radar(entity, copy_settings)
 	
 	M.refresh_radar(data)
 	return data
+end
+
+function M.refresh_all_custom_radars(data)
+	for _,data in pairs(storage.radars) do
+		M.refresh_radar(data)
+	end
 end
 
 return M

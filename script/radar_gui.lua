@@ -44,12 +44,12 @@ local function radar_gui_update_channels(gui, data)
 	
 	local ch = storage.channels.map[data.S.selected_channel]
 	gui.refs.ch_name.text = ch and ch.name or ""
-	gui.refs.ch_interplanetary.state = ch and ch.is_interplanetary or false
+	gui.refs.ch_interplanetary.state = ch and ch.is_interplanetary and storage.settings.allow_interpl or false
 	
 	local can_edit = ch ~= nil and ch.id > 1 -- can't edit [Global] channel!
 	gui.refs.ch_name.enabled = can_edit
 	gui.refs.ch_delete.enabled = can_edit
-	gui.refs.ch_interplanetary.enabled = can_edit
+	gui.refs.ch_interplanetary.enabled = can_edit and storage.settings.allow_interpl
 end
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
@@ -305,7 +305,7 @@ local function create_radar_gui(player, entity)
 		GUI{type="line", style={margin={8,0,8,0}}},
 		gui_hflow{style={bottom_margin=6, horizontal_spacing=20}}:add{
 			GUI{type="radiobutton", name="pl_readStd", caption="Standard", state=false, tooltip="Standard read mode (2 tick delay)"},
-			GUI{type="radiobutton", name="pl_readRaw", caption="Raw",      state=false, tooltip="Raw read mode (1 tick delay)"},
+			GUI{type="radiobutton", name="pl_readRaw", caption="Raw",      state=false, tooltip="Raw read mode (Interplanetary reads possible, 1 tick delay)"},
 		},
 		gui_vflow{name="pl_std"}:add{
 			circuit_enable("pl_readSta", "Read platform status",               status_desc,tick2),
