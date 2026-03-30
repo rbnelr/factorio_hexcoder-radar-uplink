@@ -138,6 +138,7 @@ end
 script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 	--game.print("on_gui_checked_state_changed: ".. serpent.block(event))
 	local gui = storage.open_guis[event.player_index]
+	if not gui then return end
 	local refs = gui.refs
 	local data = gui.data
 	-- build new settings to avoid storing settings not relevant to current mode
@@ -202,6 +203,7 @@ end)
 script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 	--game.print("on_gui_selection_state_changed: ".. serpent.block(event))
 	local gui = storage.open_guis[event.player_index]
+	if not gui then return end
 	local data = gui.data
 	
 	if event.element.name == "pl_drop_down" then
@@ -226,11 +228,12 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 	
 end)
 script.on_event(defines.events.on_gui_click, function(event)
+	local gui = storage.open_guis[event.player_index]
+	if not gui then return end
 	--game.print("on_gui_click: ".. serpent.block(event))
 	if event.element.name == "hexcoder_radar_uplink-window_close_button" then
 		game.get_player(event.player_index).opened = nil
 	elseif event.element.name == "ch_delete" then
-		local gui = storage.open_guis[event.player_index]
 		local data = gui.data
 		
 		radar_channels.destroy_channel(data.S.selected_channel)
@@ -239,9 +242,10 @@ script.on_event(defines.events.on_gui_click, function(event)
 	end
 end)
 script.on_event(defines.events.on_gui_confirmed, function(event)
+	local gui = storage.open_guis[event.player_index]
+	if not gui then return end
 	--game.print("on_gui_confirmed: ".. serpent.block(event))
 	if event.element.name == "ch_name" then
-		local gui = storage.open_guis[event.player_index]
 		local refs = gui.refs
 		local data = gui.data
 		
