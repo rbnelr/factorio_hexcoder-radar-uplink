@@ -8,6 +8,7 @@
 ---@class RadarData
 ---@field id unit_number
 ---@field entity LuaEntity
+---@field status defines.entity_status
 ---@field S RadarSettings
 ---@field dcs? table<string, LuaEntity>
 
@@ -18,6 +19,7 @@
 ---@field _prev_progress number?
 
 local util = require("util")
+local radar_channels = require("script.radar_channels")
 
 local M = {}
 
@@ -406,6 +408,7 @@ local function refresh_platform_radar(id, entity, data)
 	end
 	
 	local radar = entity.get_wire_connectors(true)
+	local working = data.status == defines.entity_status.working
 	
 	for k,params in pairs(dc_config) do
 		local dc = data.dcs[k]
@@ -413,7 +416,7 @@ local function refresh_platform_radar(id, entity, data)
 		local ctrl = data.dcs[k].get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
 		ctrl.parameters = params
 		
-		local rg = data.S.read[k]
+		local rg = working and data.S.read[k]
 		local con = dc.get_wire_connectors(true)
 		
 		con[W.combinator_input_red  ].disconnect_all(HIDDEN)
@@ -475,7 +478,7 @@ end
 function M.refresh_radar(data)
 	local entity = data.entity
 	local id = data.id
-	--game.print("refresh_radar: ".. serpent.block(data))
+	game.print("refresh_radar: ".. serpent.block(data))
 	
 	-- write tags to ghosts on change (ui seems to get a copy, possibly because entity.tags is behind API which copies)
 	if entity.type == "entity-ghost" then
@@ -527,7 +530,12 @@ function M.init_radar(entity, copy_settings)
 	if not data then
 		script.register_on_object_destroyed(entity)
 		
-		data = { id = id, entity = entity, S = S }
+		data = {
+			id = id,
+			entity = entity,
+			status = entity.status,
+			S = S
+		}
 	end
 	
 	M.refresh_radar(data)
@@ -537,6 +545,17 @@ end
 function M.refresh_all_custom_radars(data)
 	for _,data in pairs(storage.radars) do
 		M.refresh_radar(data)
+	end
+end
+
+function M.poll_radar_power(entity)
+	local data = storage.radars[entity.unit_number]
+	
+	if data and entity.status ~= data.status then
+		data.status = entity.status
+		
+		M.refresh_radar(data)
+		radar_channels.update_radar_channel(entity)
 	end
 end
 

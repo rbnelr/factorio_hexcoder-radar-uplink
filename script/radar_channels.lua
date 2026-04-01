@@ -1,5 +1,3 @@
-
-
 ---@class Channels
 ---@field next_id channel_id
 ---@field map table<channel_id, Channel>

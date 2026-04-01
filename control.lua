@@ -27,6 +27,13 @@ TODO: copy paste? not really possible to to properly (with visual feedback?); bu
 ---@field polling_radars table<unit_number, RadarData>
 ---@field polling_platforms table<platform_index, PlatformData>
 ---@field channels Channels
+---@field polling Polling
+	
+---@class Polling
+---@field cur integer
+---@field hole integer?
+---@field list LuaEntity[]
+---@field listsz integer
 
 ---@class ModSettings
 ---@field allow_interpl boolean
@@ -49,6 +56,84 @@ local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
 local radar_gui = require("script.radar_gui")
 
+-- tick certain things at 10x per second to reduce load, is this a good idea or should we 'stagger' entity ticks?
+script.on_nth_tick(6, function(event)
+	-- poll when gui is open to react to player walking out of reach of radar
+	for player_i, gui in pairs(storage.open_guis) do
+		local player = game.get_player(player_i) ---@cast player -nil
+		radar_gui.tick_gui(player, gui)
+	end
+	
+	-- poll radars in rare case of trying to connect to platform still being built
+	for _,data in ipairs(storage.polling_radars) do
+		radars.refresh_radar(data)
+	end
+	
+	-- poll platforms that are currently moving to display real time status
+	for _,data in ipairs(storage.polling_platforms) do
+		radars.update_platform_status(data)
+	end
+end)
+
+local poll_period = 60
+
+script.on_event(defines.events.on_tick, function(event)
+	local p = storage.polling
+	if not p then return end
+	local cur = p.cur
+	local hole = p.hole
+	local list = p.list
+	
+	-- update entire list and thus each entity exactly once every poll_period
+	-- also automatically remove invalid entries and progressively compact list
+	local ratio = (event.tick % poll_period) + 1 -- +1 only works with tick freq=1, poll_period must be divisible by this, so 1 is good
+	local last = math.ceil((ratio / poll_period) * p.listsz)
+	
+	for i=cur,last do
+		local e = list[i]
+		if e and e.valid then
+			--game.print(string.format("tick: %d poll %d", event.tick % poll_freq, i))
+			
+			radars.poll_radar_power(e)
+			
+			if hole then
+				list[hole] = e
+				list[i] = nil -- This allows list to auto-shrink, but breaks #list, but prefer this over keeping holes with valid values
+				hole = hole + 1
+			end
+		elseif not hole then
+			hole = i
+		end
+		
+		--game.print("poll ".. i)
+	end
+	cur = last+1
+	
+	if ratio == poll_period then -- end of list reached
+		cur = 1
+		hole = nil
+	end
+	
+	p.cur = cur
+	p.hole = hole
+end)
+
+local function poll_register_radar(entity)
+	local idx = storage.polling.listsz + 1
+	storage.polling.list[idx] = entity
+	storage.polling.listsz = idx
+end
+
+commands.add_command("hexcoder_radar_uplink-poll_init", nil, function(command)
+	storage.polling = { cur=1, list={}, listsz=0 }
+	for _, surface in pairs(game.surfaces) do
+		local radars = surface.find_entities_filtered{ type="radar", name="radar" }
+		for _, r in ipairs(radars) do
+			poll_register_radar(r)
+		end
+	end
+end)
+
 -- this allows blueprint to copy custom settings, and supports on_entity_cloned
 -- TODO: blueprinting over does not trigger any events (could detect blueprint placed by player in other ways, but is complicated)
 -- TODO: things being built due to undo redo don't work yet
@@ -63,6 +148,7 @@ local function on_created_entity(event)
 	end
 	
 	-- This needs to happen for all radars
+	poll_register_radar(entity)
 	radar_channels.update_radar_channel(entity)
 end
 local function on_entity_removed(event)
@@ -150,27 +236,11 @@ for _, event in ipairs({
 	radar_channels.on_surface_event(event.surface_index, game.surfaces[event.surface_index])
 end) end
 
--- tick certain things at 10x per second to reduce load, is this a good idea or should we 'stagger' entity ticks?
-script.on_nth_tick(6, function(event)
-	for player_i, gui in pairs(storage.open_guis) do
-		local player = game.get_player(player_i) ---@cast player -nil
-		radar_gui.tick_gui(player, gui)
-	end
-	
-	for _,data in ipairs(storage.polling_radars) do
-		radars.refresh_radar(data)
-	end
-	
-	for _,data in ipairs(storage.polling_platforms) do
-		radars.update_platform_status(data)
-	end
-end)
-
 ---- init
 
 local function init(event)
 	storage.settings = {
-		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
+		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]]
 	}
 	storage.open_guis = {}
 	storage.radars = {}
@@ -178,6 +248,7 @@ local function init(event)
 	storage.polling_radars = {}
 	storage.polling_platforms = {}
 	storage.channels = { next_id=1, map={}, surfaces={} }
+	storage.polling = { cur=1, list={}, listsz=0 }
 	
 	local ch = radar_channels.create_new_channel()
 	ch.name = "[Global]"
@@ -196,6 +267,7 @@ local function _reset(event) -- allow me to fix outdated state during dev
 	storage.polling_radars = nil
 	storage.polling_platforms = nil
 	storage.channels = nil
+	storage.polling = nil
 	
 	for _, s in pairs(game.surfaces) do
 		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-cc" }) do
