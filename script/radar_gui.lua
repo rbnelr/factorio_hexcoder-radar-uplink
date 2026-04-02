@@ -6,7 +6,7 @@
 
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
-require("script.gui_util")
+require("script.myutil")
 
 local M = {}
 
@@ -155,7 +155,7 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 	refs.mode_platforms.state = S.mode == "platforms"
 	
 	if S.mode == "platforms" then
-		S.selected_platform = data.S.selected_platform
+		S.selected_platform = gui.drop_down_platforms[gui.refs.pl_drop_down.selected_index]
 		
 		local raw = refs.pl_readRaw.state
 		if     event.element.name == "pl_readStd" then raw = false
@@ -181,7 +181,7 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 		refs.pl_std.visible = S.read_mode == "std"
 		refs.pl_raw.visible = S.read_mode == "raw"
 	else
-		S.selected_channel = data.S.selected_channel
+		S.selected_channel = gui.drop_down_channels[gui.refs.ch_drop_down.selected_index]
 		
 		local ch = storage.channels.map[S.selected_channel]
 		if ch then
@@ -230,7 +230,10 @@ script.on_event(defines.events.on_gui_click, function(event)
 	elseif event.element.name == "ch_delete" then
 		local data = gui.data
 		
-		radar_channels.destroy_channel(data.S.selected_channel)
+		local ch = storage.channels.map[data.S.selected_channel]
+		if ch then
+			radar_channels.destroy_channel(data.S.selected_channel)
+		end
 		
 		radar_gui_update_channels(gui, data)
 	end

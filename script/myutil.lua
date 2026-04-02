@@ -10,6 +10,8 @@
 
 ---@alias GuiRefs table<string, LuaGuiElement>
 
+local util = require("util")
+
 local GuiDef = {}
 GuiDef.__index = GuiDef
 
@@ -117,3 +119,33 @@ end
 function gui_vflow(args)
 	return GUI{type="flow", name=args.name, direction="vertical", style=args.style}
 end
+
+local M = {}
+
+-----@param str string
+-----@return string[]
+--function M.version_split(str)
+--	local parts = {}
+--	for s in string.gmatch(str, "([^.]+)") do
+--		table.insert(parts, s)
+--	end
+--	return parts
+--end
+
+---@param l string
+---@param r string
+---@return boolean
+function M.version_less(l, r)
+	local l_parts = util.split(l, ".")
+	local r_parts = util.split(r, ".")
+	for i=1, #l_parts do
+		if tonumber(l_parts[i]) < tonumber(r_parts[i]) then
+			return true
+		elseif l_parts[i] ~= r_parts[i] then
+			return false
+		end
+	end
+	return false
+end
+
+return M

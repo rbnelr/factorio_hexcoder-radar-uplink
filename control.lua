@@ -1,6 +1,9 @@
 --[[
 TODO: migrations
 
+TODO: channel delete bug probably was gui vs data desync, causing delete to happen on none channel
+ -> should fix gui desync! retained mode gui suck!
+
 TODO: add enough features for platform read mode to support fully automated mixed rocket launches together with silo mod
  -> need to be able to read requests without hard-selecting platforms
  -> read total requests? Not sure if actually useful
@@ -37,6 +40,8 @@ HIDDEN = defines.wire_origin.script
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
 local radar_gui = require("script.radar_gui")
+local myutil = require("script.myutil")
+local util = require("util")
 
 script.on_nth_tick(12, function(event)
 	-- poll when gui is open to react to player walking out of reach of radar
@@ -111,10 +116,12 @@ end, {{filter = "type", type = "radar"}})
 -- for custom entities with custom settings, close any gui and call delete_radar/delete_platform
 script.on_event(defines.events.on_object_destroyed, function(event)
 	--game.print("on_object_destroyed: ".. serpent.line(event))
-	for player_i, gui in pairs(storage.open_guis) do
-		-- close open entity gui if entity destroyed
-		if event.useful_id == gui.data.id then
-			game.get_player(player_i).opened = nil
+	if storage.open_guis then
+		for player_i, gui in pairs(storage.open_guis) do
+			-- close open entity gui if entity destroyed
+			if event.useful_id == (gui and gui.data and gui.data.id) then
+				game.get_player(player_i).opened = nil
+			end
 		end
 	end
 	
@@ -165,6 +172,17 @@ end) end
 
 ---- init
 
+script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
+	if event.setting == "hexcoder_radar_uplink-allow_interplanetary_comms" then
+		storage.settings.allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
+		
+		radars.refresh_all_custom_radars()
+		radar_channels.update_all_channels_is_interplanetary()
+	end
+	
+	storage.settings.poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
+end)
+
 ---@class player_index : integer
 ---@class unit_number : integer
 ---@class platform_index : integer
@@ -185,7 +203,7 @@ end) end
 ---@field allow_interpl boolean
 ---@field poll_period integer
 
-local function init(event)
+local function init(clean)
 	storage.settings = {
 		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]],
 		poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value --[[@as integer]],
@@ -202,9 +220,11 @@ local function init(event)
 	ch.name = "[Global]"
 	ch.is_interplanetary = false
 	
-	for _, surface in pairs(game.surfaces) do
-		for _, r in ipairs(surface.find_entities_filtered{ type="radar", name="radar" }) do
-			radars.init_radar(r)
+	if not clean then
+		for _, surface in pairs(game.surfaces) do
+			for _, r in ipairs(surface.find_entities_filtered{ type="radar", name="radar" }) do
+				radars.init_radar(r)
+			end
 		end
 	end
 end
@@ -213,35 +233,71 @@ local function _reset() -- allow me to fix outdated state during dev
 	storage = {}
 	
 	for _, s in pairs(game.surfaces) do
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-cc" }) do
-			e.destroy()
-		end
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-dc" }) do
-			e.destroy()
-		end
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-ac" }) do
-			e.destroy()
-		end
-		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-pc" }) do
-			e.destroy()
+		for _, name in pairs({"cc","dc","ac","pc"}) do
+			for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-"..name }) do
+				e.destroy()
+			end
 		end
 	end
 	
-	init()
+	init(false)
 end
 script.on_init(function(event)
-	init()
+	init(true)
 end)
 
-script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
-	if event.setting == "hexcoder_radar_uplink-allow_interplanetary_comms" then
-		storage.settings.allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
-		
-		radars.refresh_all_custom_radars()
-		radar_channels.update_all_channels_is_interplanetary()
-	end
+-- First attempt at adding migrations
+script.on_configuration_changed(function(data)
+	local changes = data.mod_changes["hexcoder-radar-uplink"]
+	if not changes then return end
+	local old = changes.old_version
+	if not old then return end -- on_init already handles existing save
 	
-	storage.settings.poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
+	if myutil.version_less(old, "1.3.0") then
+		local channels = util.table.deepcopy(storage.channels or {}) -- deepcopy just to be safe
+		local old_radars = util.table.deepcopy(storage.radars or {})
+		
+		_reset()
+		
+		local new_platforms = {}
+		for _,force in pairs(game.forces) do
+			new_platforms[force.index] = {}
+			for id,plat in pairs(force.platforms) do
+				new_platforms[force.index][id] = plat
+			end
+		end
+		
+		storage.channels.next_id = channels.next_id or 1
+		for id,ch in pairs(channels.map) do
+			if type(id) == "number" and id > 1 and ch and ch.name and id < storage.channels.next_id then
+				storage.channels.map[id] = { id=id, name=ch.name, is_interplanetary=ch.is_interplanetary or false }
+			end
+		end
+		for id,data in pairs(storage.radars) do
+			local old_data = old_radars[id]
+			if old_data and old_data.entity and old_data.entity.valid and old_data.entity.unit_number and old_data.S then
+				data.S.mode = old_data.S.mode == "platforms" and "platforms" or "comms"
+				if old_data.S.mode == "platforms" then
+					data.S.read_mode = old_data.S.read_mode == "raw" and "raw" or "std"
+					data.S.read = data.S.read or {}
+					for k,def in pairs(radars.radar_defaults["pl_"..data.S.read_mode]) do
+						data.S.read[k] = old_data.S.read and old_data.S.read[k] or def
+					end
+					data.S.selected_platform = nil
+					if new_platforms[data.entity.force.index][old_data.S.selected_platform] then
+						data.S.selected_platform = old_data.S.selected_platform
+					end
+				else
+					data.S.selected_channel = 0
+					if storage.channels.map[old_data.S.selected_channel] then
+						data.S.selected_channel = old_data.S.selected_channel
+					end
+				end
+				
+				radars.refresh_radar(data)
+			end
+		end
+	end
 end)
 
 ---- debugging

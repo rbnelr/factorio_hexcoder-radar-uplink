@@ -369,11 +369,13 @@ end
 ---@param id platform_index
 function M.delete_platform(id)
 	local data = storage.platforms[id]
-	for _,e in pairs(data.readers) do
-		e.destroy()
+	if data then
+		for _,e in pairs(data.readers) do
+			e.destroy()
+		end
+		data.readers = nil
+		storage.platforms[id] = nil
 	end
-	data.readers = nil
-	storage.platforms[id] = nil
 end
 
 --[[ Radars:

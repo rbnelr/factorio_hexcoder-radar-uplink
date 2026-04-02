@@ -94,12 +94,14 @@ end
 
 ---@param id channel_id
 function M.destroy_channel(id)
+	if id <= 1 then return end -- defensive: gui may mess up, can't destroy [None] or [Global]
 	local chs = storage.channels
-	chs.map[id] = nil
 	
-	for _, surf in pairs(storage.channels.surfaces) do
+	for _, surf in pairs(chs.surfaces) do
 		destroy_hubs(surf, id)
 	end
+	
+	chs.map[id] = nil
 end
 
 -- init channel for surface, if the same channel get connected to from other surface, their link_hub will be connected
