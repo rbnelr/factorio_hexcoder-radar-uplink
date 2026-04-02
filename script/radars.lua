@@ -9,6 +9,7 @@
 ---@field id unit_number
 ---@field entity LuaEntity
 ---@field status defines.entity_status
+---@field poll_idx integer
 ---@field S RadarSettings
 ---@field dcs? table<string, LuaEntity>
 
@@ -49,19 +50,35 @@ function M.settings_to_tags(ghost, entity_id)
 	return false
 end
 
+--[[ Platforms:
+	Lazily create platform data and combinators on init_platform(), delete on on_object_destroyed, currently not deleting if no longer used
+	TODO: explain circuits on platform
+	
+	Platform signals can mostly be generated without on_tick:
+	
+	Status: on_space_platform_changed_state (but on_tick when travelling)
+	Raw requests: on_entity_logistic_slot_changed + on_space_platform_changed_state (requests change due to import_from depending on location)
+	On the way: on_rocket_launch_ordered + on_cargo_pod_delivered_cargo
+	Hub Inventory: no events to react to but circuit signals can be implemented via proxy container!
+	
+	-> actually on_entity_logistic_slot_changed does not trigger if a section is toggled, so it's not reliable...
+]]
+
 ---@param data PlatformData
-function update_platform_status(data)
+function M.update_platform_status(data)
 	local plat = data.platform
 	
-	local signals = {}
+	local loc = {} ---@type LogisticFilter[]
+	local stat = {} ---@type LogisticFilter[]
+	
 	-- platform index
-	table.insert(signals, {value={type="virtual", name="signal-P", quality="normal"}, min=plat.index})
+	table.insert(loc, {value={type="virtual", name="signal-P", quality="normal"}, min=plat.index})
 	
 	-- signal space location that platform is orbiting
 	if plat.space_location then
-		table.insert(signals, {value={type="space-location", name=plat.space_location.name, quality="normal"}, min=1})
+		table.insert(loc, {value={type="space-location", name=plat.space_location.name, quality="normal"}, min=1})
 		
-		storage.polling_platforms[data.platform.index] = nil
+		--storage.polling_platforms[data.platform.index] = nil -- stop polling if orbiting
 	-- signal space connection platform travelling
 	-- since space connections are not supported as signals, output from/to space locations as signals with -1/-2 value
 	-- dont do 1/2 like platform hub, due to conflict with space_location, avoid using 2/3 to allow nauvis>0 as condition (use nauvis<0 to check if platform is leaving or arriving)
@@ -73,7 +90,7 @@ function update_platform_status(data)
 		local progress = plat.distance
 		--local reverse = speed and speed < 0.0 -- speed is never reported negative
 		local sched = plat.schedule
-		local sched_targ = sched and sched.records[sched.current].station
+		--local sched_targ = sched and sched.records[sched.current].station
 		
 		local reverse = nil
 		
@@ -84,15 +101,8 @@ function update_platform_status(data)
 		data._prev_conn = conn
 		data._prev_progress = progress
 		
-		--game.print(" > delta: ".. delta .." speed: ".. _speed .."reported: ".. speed .." fac: ".. (_speed / speed), p)
-		
-		table.insert(signals, {value={type="space-location", name=sched_targ, quality="normal"}, min=-10})
-		
-		if speed then
-			-- speed is per tick
-			speed = round(speed * 60.0)
-			table.insert(signals, {value={type="virtual", name="signal-V", quality="normal"}, min=speed})
-		end
+		-- this might be a bit too confusing / hard to parse in combinators
+		--table.insert(signals, {value={type="space-location", name=sched_targ, quality="normal"}, min=-10})
 		
 		-- Only report connection and progress/dist when direction can be safely determined (don't output for one update tick)
 		if reverse ~= nil then
@@ -102,50 +112,70 @@ function update_platform_status(data)
 				progress = 1.0 - progress
 			end
 			
-			table.insert(signals, {value={type="space-location", name=from.name, quality="normal"}, min=-1})
-			table.insert(signals, {value={type="space-location", name=  to.name, quality="normal"}, min=-2})
+			table.insert(loc, {value={type="space-location", name=from.name, quality="normal"}, min=-1})
+			table.insert(loc, {value={type="space-location", name=  to.name, quality="normal"}, min=-2})
 			
 			if progress then
 				-- distance is in [0,1]
 				local percent = round(progress * 100.0)
 				local dist_km = round(progress * conn.length)
-				table.insert(signals, {value={type="virtual", name="signal-T", quality="normal"}, min=percent})
-				table.insert(signals, {value={type="virtual", name="signal-D", quality="normal"}, min=dist_km})
+				table.insert(stat, {value={type="virtual", name="signal-T", quality="normal"}, min=percent})
+				table.insert(stat, {value={type="virtual", name="signal-D", quality="normal"}, min=dist_km})
 			end
 		end
 		
+		if speed then
+			-- speed is per tick
+			speed = round(math.abs(speed) * 60.0)
+			table.insert(stat, {value={type="virtual", name="signal-V", quality="normal"}, min=speed})
+		end
+		
 		-- in transit, update in real time
-		storage.polling_platforms[data.platform.index] = data
+		--storage.polling_platforms[data.platform.index] = data
 	end
 	
-	local ctrl = data.readers.stat_raw.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
-	ctrl.sections[1].filters = signals
+	local ctrl = data.readers.loc_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	ctrl.sections[1].filters = loc
+	
+	local ctrl2 = data.readers.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	ctrl2.sections[1].filters = stat
 end
 ---@param data PlatformData
-function update_platform_requests_at_planet(data)
+function M.update_platform_requests_at_planet(data)
 	local plat = data.platform
 	
 	local signals = {} -- temporary table of signals, could avoid this via LuaLogisticSection.set_slot, but may be slower due to more api calls(?)
-	table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
 	
-	-- Platform hub logistic points, for hubs we seem to always have 2: { requester, passive_provider }
-	local logi = plat.hub.get_logistic_point()[1]
-	if logi.filters then
-		--game.print(">> filters: ")
-		-- filters are already compiled (all requests for one item summed) and filtered by import_from planet (unlike raw sections)
-		for _, fil in ipairs(logi.filters) do
-			--game.print(" > ".. serpent.line(fil))
-			-- we can ignore comparator since only =quality setting can have min (others only apply max count which does not result in requests, but the platform dropping items) 
-			if fil.count > 0 then
-				table.insert(signals, {
-					value = { type="item", name=fil.name, quality=fil.quality },
-					min = fil.count
-				})
+	-- disable requests while in transit
+	local enable_requests = plat.space_location
+	  and plat.state ~= defines.space_platform_state.on_the_path
+	  and plat.state ~= defines.space_platform_state.waiting_for_departure
+	if enable_requests then
+		table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
+		
+		-- Platform hub logistic points, for hubs we seem to always have 2: { requester, passive_provider }
+		local logi = plat.hub.get_logistic_point()[1]
+		if logi.filters then
+			--game.print(">> filters: ")
+			-- filters are already compiled (all requests for one item summed) and filtered by import_from planet (unlike raw sections)
+			-- while in transit no filter is applied
+			for _, fil in ipairs(logi.filters) do
+				--game.print(" > ".. serpent.line(fil))
+				--if fil.count > 0 then
+					table.insert(signals, {
+						value = { type="item", name=fil.name, quality=fil.quality },
+						min = fil.count
+					})
+				--end
+				--table.insert(signals, { -- TODO: try assinging fil directly to value, as an optimization?
+				--	value = fil,
+				--	min = fil.count
+				--})
 			end
 		end
 	end
 	
-	local ctrl = data.readers.req_raw.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	local ctrl = data.readers.req_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[1].filters = signals
 end
 ---@param plat LuaSpacePlatform
@@ -166,30 +196,41 @@ function update_platform_pod_deliveries(plat)
 		end
 	end
 	
-	local ctrl = data.readers.otw_raw.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	local ctrl = data.readers.otw_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[1].filters = signals -- could avoid
 end
 
 script.on_event(defines.events.on_space_platform_changed_state, function (event)
-	--game.print("on_space_platform_changed_state: platf ".. event.platform.index .." new_state: ".. serpent.line(event.platform.state))
+	--local names = {
+	--	[defines.space_platform_state.waiting_for_starter_pack] = "waiting_for_starter_pack",
+	--	[defines.space_platform_state.starter_pack_requested] = "starter_pack_requested",
+	--	[defines.space_platform_state.starter_pack_on_the_way] = "starter_pack_on_the_way",
+	--	[defines.space_platform_state.on_the_path] = "on_the_path",
+	--	[defines.space_platform_state.waiting_for_departure] = "waiting_for_departure",
+	--	[defines.space_platform_state.no_schedule] = "no_schedule",
+	--	[defines.space_platform_state.no_path] = "no_path",
+	--	[defines.space_platform_state.waiting_at_station] = "waiting_at_station",
+	--	[defines.space_platform_state.paused] = "paused",
+	--}
+	--game.print("on_space_platform_changed_state: platf ".. event.platform.index .." new_state: ".. serpent.line({ event.platform.state, names[event.platform.state] }))
 	
 	local data = storage.platforms[event.platform.index]
 	if data then
-		update_platform_status(data)
-		
-		if event.platform.state == defines.space_platform_state.waiting_at_station then
-			update_platform_requests_at_planet(data)
-		end
+		M.update_platform_status(data)
+		M.update_platform_requests_at_planet(data)
 	end
 end)
+-- TODO: this does not actually trigger on player en/disabling logistic groups!
 script.on_event(defines.events.on_entity_logistic_slot_changed, function (event)
 	local entity = event.entity
 	if entity.type == "space-platform-hub" then
+		--game.print("on_entity_logistic_slot_changed: ".. serpent.line(event))
+		
 		local platform = entity.surface and entity.surface.platform
 		if platform then
 			local data = storage.platforms[platform.index]
 			if data then
-				update_platform_requests_at_planet(data)
+				M.update_platform_requests_at_planet(data)
 			end
 		end
 	end
@@ -222,6 +263,15 @@ script.on_event(defines.events.on_cargo_pod_delivered_cargo, function (event)
 	end
 end)
 
+---@param data PlatformData
+function M.poll_platform(data)
+	if data.platform.space_location then
+		M.update_platform_requests_at_planet(data)
+	else
+		M.update_platform_status(data)
+	end
+end
+
 -- there seems to be no event for scheduled_for_deletion, so lets just stay connected until it is deleted
 ---@param p LuaSpacePlatform
 ---@return boolean
@@ -235,19 +285,21 @@ end
 function M.init_platform(platform)
 	local data = storage.platforms[platform.index]
 	if not data then
-		local reg_id, index = script.register_on_object_destroyed(platform)
+		local _, index = script.register_on_object_destroyed(platform)
 		
 		local base_pos = { x=platform.hub.position.x-2, y=platform.hub.position.y }
-		local arith_negate = {
-			first_constant=0, second_signal={type="virtual", name="signal-each"}, operation="-",
-			output_signal={type="virtual", name="signal-each"}
-		}
-		local arith_identity = {
+		
+		local arith_identity = { ---@type ArithmeticCombinatorParameters
 			first_signal={type="virtual", name="signal-each"}, second_constant=1, operation="*",
 			output_signal={type="virtual", name="signal-each"}
 		}
+		local arith_RminusG = { ---@type ArithmeticCombinatorParameters
+			first_signal={type="virtual", name="signal-each"}, second_signal={type="virtual", name="signal-each"}, operation="-",
+			first_signal_networks=netR, second_signal_networks=netG,
+			output_signal={type="virtual", name="signal-each"}
+		}
 		-- contant combinators script can write signals into on events
-		local function combinator(type, x,y, descr, arith, input)
+		local function combinator(type, x,y, descr, arith, input_red, inputs_green)
 			local combinator = platform.surface.create_entity{
 				name=type, force=platform.force,
 				position={base_pos.x+x, base_pos.y+y}, snap_to_grid=false,
@@ -259,10 +311,17 @@ function M.init_platform(platform)
 				local ctrl = combinator.get_control_behavior() --[[@as LuaArithmeticCombinatorControlBehavior]]
 				ctrl.parameters = arith
 			end
-			if input then
-				local i = input.get_wire_connectors(true)[W.circuit_red]
+			if input_red then
+				local i = input_red.get_wire_connectors(true)[W.circuit_red]
 				local o = combinator.get_wire_connectors(true)[W.combinator_input_red]
 				o.connect_to(i, false, HIDDEN)
+			end
+			if inputs_green then
+				for _,inp in ipairs(inputs_green) do
+					local i = inp.get_wire_connectors(true)[W.circuit_green]
+					local o = combinator.get_wire_connectors(true)[W.combinator_input_green]
+					o.connect_to(i, false, HIDDEN)
+				end
 			end
 			return combinator
 		end
@@ -279,17 +338,22 @@ function M.init_platform(platform)
 			return pc
 		end
 		
+		-- Split location (orbiting planet or space connection + platform id)
+		-- from speed, progress etc. for planet check for radars on platforms to work correctly
 		local readers = {}
-		readers.stat_raw = combinator("hexcoder_radar_uplink-cc", 0,0, "platform status")
-		readers.req_raw = combinator("hexcoder_radar_uplink-cc", 1,0, "platform requests at current planet")
-		readers.otw_raw = combinator("hexcoder_radar_uplink-cc", 2,0, "platform targeted_items_deliver ('on the way' via rocket silo cargo pod)")
+		readers.loc_cc  = combinator("hexcoder_radar_uplink-cc", 0,0, "platform location")
+		readers.stat_cc = combinator("hexcoder_radar_uplink-cc", -1,0, "platform status")
+		readers.req_cc  = combinator("hexcoder_radar_uplink-cc", 1,0, "platform requests at current planet")
+		readers.otw_cc  = combinator("hexcoder_radar_uplink-cc", 2,0, "platform targeted_items_deliver ('on the way' via rocket silo cargo pod)")
 		-- proxy container that automatically reads platform hub iventory without user needing to use "read contents" option
-		readers.inv_raw = proxy_container("hexcoder_radar_uplink-pc", 3,0)
+		readers.inv_pc  = proxy_container("hexcoder_radar_uplink-pc", 3,0)
 		
-		readers.stat = combinator("hexcoder_radar_uplink-ac", 0,2, "platform status, delayed 1 tick", arith_identity, readers.stat_raw)
-		readers.req = combinator("hexcoder_radar_uplink-ac", 1,2, "platform requests at current planet, delayed 1 tick", arith_identity, readers.req_raw)
-		readers.otw_neg = combinator("hexcoder_radar_uplink-ac", 2,2, "platform on the way, delayed 1 tick", arith_negate, readers.otw_raw)
-		readers.inv_neg = combinator("hexcoder_radar_uplink-ac", 3,2, "platform hub inventory negated", arith_negate, readers.inv_raw)
+		readers.stat    = combinator("hexcoder_radar_uplink-ac", 0,1.5, "platform status, delay=1", arith_identity, readers.loc_cc, {readers.stat_cc})
+		readers.req_raw = combinator("hexcoder_radar_uplink-ac", 1,1.5, "platform requests at current planet, delay=1", arith_identity, readers.req_cc)
+		readers.otw_raw = combinator("hexcoder_radar_uplink-ac", 2,1.5, "platform deliveries on the way, delay=1", arith_identity, readers.otw_cc)
+		readers.inv_raw = combinator("hexcoder_radar_uplink-ac", 3,1.5, "platform hub inventory negated, delay=1", arith_identity, readers.inv_pc)
+		
+		readers.req = combinator("hexcoder_radar_uplink-ac", 4,1, "unfulfilled platform requests", arith_RminusG, readers.req_cc, { readers.otw_cc, readers.inv_pc })
 		
 		data = {
 			platform=platform,
@@ -297,13 +361,13 @@ function M.init_platform(platform)
 		}
 		storage.platforms[index] = data
 		
-		update_platform_status(data)
-		update_platform_requests_at_planet(data)
+		M.update_platform_status(data)
+		M.update_platform_requests_at_planet(data)
 	end
 	return data
 end
 ---@param id platform_index
-function M.reset_platform(id)
+function M.delete_platform(id)
 	local data = storage.platforms[id]
 	for _,e in pairs(data.readers) do
 		e.destroy()
@@ -312,17 +376,31 @@ function M.reset_platform(id)
 	storage.platforms[id] = nil
 end
 
---[[
-	init: call to lazily prepare custom entity settings table, called by gui open or spawing with tags
-	refresh: call once settings have been modified in gui, and called at end of init_radar
-	         when custom mode selected: spawns custom combinators, wires them up and tracks data in custom tables
-			 when comms mode selection: resets: despawns combinators, clears from custom tables
-	reset: explicitly reset all custom data
-	
-	never keep entities with comms mode selection radar table nor have combinators for them spawned
-	still allow gui to display and modify settings by letting it remeber return data table via init_radar, which it can pass into refresh
-	keep ghost entities separate, do not insert into storage, keep and modify their data in entity.tags, but allow gui to edit it by testing for ghosts in init and refresh
+--[[ Radars:
+	Originally created radar data on gui click, then if settings were ever returned to default (vanilla mode)
+	  data was deleted to minimize storage and potential processing cost
+	But this was brittle, so now all radars should always be stored in storage.radars (unit_number -> RadarData)
+	Data stores various data, RadarSettings (data.S) store actual user settings made in GUI, these are converted to and from tags in ghost entities and blueprints
+	ghost entities itself support gui customization, init_radar and refresh_radar both handle ghosts by generating data that is not in storage but then gets stored by gui
+	circuits (DCs) are created and deleted depending on settings
+	init_radar lazily creates data and calls refresh (called in mod init and on any radar spawn)
+	refresh_radar fully updates circuits to correspond to settings
 ]]
+
+local function add_to_poll_list(data)
+	assert(data.poll_idx == nil)
+	data.poll_idx = #storage.polling_radars+1
+	storage.polling_radars[data.poll_idx] = data
+end
+local function remove_from_poll_list(data)
+	-- delete by swap with last
+	local idx = data.poll_idx
+	data.poll_idx = nil
+	local last = #storage.polling_radars
+	storage.polling_radars[idx] = storage.polling_radars[last]
+	storage.polling_radars[idx].poll_idx = idx
+	storage.polling_radars[last] = nil
+end
 
 M.radar_defaults = {
 	pl_std = {
@@ -337,198 +415,234 @@ M.radar_defaults = {
 	}
 }
 
----@param id unit_number
-function M.reset_radar(id)
-	local data = storage.radars[id]
-	if data then
-		if data.dcs then
-			for _,v in pairs(data.dcs) do
-				v.destroy()
-			end
-			data.dcs = nil -- handle open in gui case
+---@param data RadarData
+local function clear_dcs(data)
+	if data.dcs then
+		for _,v in pairs(data.dcs) do
+			v.destroy()
 		end
-		storage.radars[id] = nil
-		storage.polling_radars[id] = nil
+		data.dcs = nil
 	end
 end
 
 ---@param id unit_number
+function M.delete_radar(id)
+	local data = storage.radars[id]
+	if data then
+		clear_dcs(data)
+		storage.radars[id] = nil
+		
+		remove_from_poll_list(data)
+	end
+end
+
+local SIG_EACH = {type="virtual", name="signal-each"}
+local SIG_CHECK = {type="virtual", name="signal-check"}
+
+---@param id unit_number
 ---@param entity LuaEntity
 ---@param data RadarData
-local function refresh_platform_radar(id, entity, data)
+local function refresh_radar_platform_mode(id, entity, data)
 	local platform = entity.force.platforms[data.S.selected_platform]
-	local plat_data = M.platform_valid(platform) and M.init_platform(platform) or nil
+	local plat_data = data.S.selected_platform and M.init_platform(platform) or nil
+	assert((platform ~= nil) == (M.platform_valid(platform) == true))
 	
-	local planet_sig = {type="space-location", name=entity.surface.planet.prototype.name}
-	---@type DeciderCombinatorParameters[]
+	local radar_surf = entity.surface
+	local radar_planet = radar_surf.planet -- nil if radar placed on space platform
+	
+	local allow_unchecked = storage.settings.allow_interpl and data.S.read_mode == "raw"
 	
 	-- Status DC just passes along info (1-tick delay one-way signal bridge)
 	local params_sta = {conditions={
-		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator="!=", first_signal_networks=netR}
+		{first_signal=SIG_EACH, constant=0, comparator="!=", first_signal_networks=netR}
 	},outputs={
-		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
+		{signal=SIG_EACH, copy_count_from_input=true, networks=netR}
 	}}
+	local params_detail
+	local params_check
 	
-	-- Unfulfilled requests or if not allowing interplanetary comms:
-	-- Requests, On-the-way, Inventory DCs only pass info if platform is orbiting radar surface
-	local params_detail = {conditions={
-		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
-		{first_signal=planet_sig, constant=0, comparator=">", compare_type="and", first_signal_networks=netG},
-	},outputs={
-		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
-	}}
-	-- If allowing interplanetary comms:
-	-- Requests, On-the-way, Inventory DCs only pass on all info (note that requests still depend on which planet is being orbited)
-	local params_detail_interpl = {conditions={
-		{first_signal={type="virtual", name="signal-each"}, constant=0, comparator=">", first_signal_networks=netR},
-	},outputs={
-		{signal={type="virtual", name="signal-each"}, copy_count_from_input=true, networks=netR}
-	}}
-	
-	if storage.settings.allow_interpl and data.S.read_mode == "raw" then
-		params_detail = params_detail_interpl
+	if radar_planet then
+		-- radar on ground: check platform planet directly
+		local planet_sig = {type="space-location", name=radar_planet.name}
+		---@type DeciderCombinatorParameters
+		params_check = {conditions={
+			{first_signal=SIG_EACH, constant=0, comparator=">"}, -- Each RG > 0
+			{first_signal=planet_sig, constant=0, comparator=">", first_signal_networks=netR, compare_type="and" }
+		},outputs={
+			{signal=SIG_CHECK, copy_count_from_input=false, constant=1}
+		}}
+	else
+		-- radar on platform: check platform planet via comparison
+		---@type DeciderCombinatorParameters
+		params_check = {conditions={
+			{first_signal=SIG_EACH, constant=0, comparator=">"}, -- Each RG > 0
+			{first_signal=SIG_EACH, second_signal=SIG_EACH, comparator="=",
+			first_signal_networks=netR, second_signal_networks=netG, compare_type="and" } -- Each R == Each G
+		},outputs={
+			{signal=SIG_CHECK, copy_count_from_input=false, constant=1}
+		}}
 	end
 	
-	local dc_config = {Sta=params_sta, Req=params_detail, Otw=params_detail, Inv=params_detail}
-	
-	if not data.dcs then
-		data.dcs = {}
-		local x = entity.position.x-1.5
-		for k,_ in pairs(dc_config) do
-			local dc = entity.surface.create_entity{
-				name="hexcoder_radar_uplink-dc", force=entity.force,
-				position={x, entity.position.y+1}, snap_to_grid=false,
-				direction=defines.direction.south
-			} ---@cast dc -nil
-			dc.destructible = false
-			
-			data.dcs[k] = dc
-			x = x+1
-		end
+	if allow_unchecked then
+		-- If allowing interplanetary comms, raw read modes always work
+		-- (note that requests still depend on which planet is being currently orbited)
+		---@type DeciderCombinatorParameters
+		params_detail = {conditions={
+			{first_signal=SIG_EACH, constant=0, comparator=">", first_signal_networks=netR}
+		},outputs={
+			{signal=SIG_EACH, copy_count_from_input=true, networks=netR}
+		}}
+	else
+		-- Non-status modes read signals only if platform is in orbit of radar via a planet check in combinator
+		---@type DeciderCombinatorParameters
+		params_detail = {conditions={
+			{first_signal=SIG_EACH, constant=0, comparator=">", first_signal_networks=netR},
+			{first_signal=SIG_CHECK, constant=0, comparator=">", first_signal_networks=netG, compare_type="and"}
+		},outputs={
+			{signal=SIG_EACH, copy_count_from_input=true, networks=netR}
+		}}
 	end
 	
-	local radar = entity.get_wire_connectors(true)
-	local working = data.status == defines.entity_status.working
+	local base_x = entity.position.x-1.5
+	local base_y = entity.position.y
+	local function make_combinator(x,y, descr)
+		local dc = radar_surf.create_entity{
+			name="hexcoder_radar_uplink-dc", force=entity.force,
+			position={base_x+x, base_y+y}, snap_to_grid=false,
+			direction=defines.direction.south
+		} ---@cast dc -nil
+		dc.destructible = false
+		dc.combinator_description = descr
+		return dc
+	end
 	
-	for k,params in pairs(dc_config) do
-		local dc = data.dcs[k]
-		
-		local ctrl = data.dcs[k].get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
+	local dcs = data.dcs
+	if not dcs then
+		dcs = {}
+		dcs.Sta = make_combinator(0,1, "platform status")
+		dcs.Req = make_combinator(1,1, "platform req")
+		dcs.Otw = make_combinator(2,1, "platform otw")
+		dcs.Inv = make_combinator(3,1, "platform inv")
+		dcs.Check = make_combinator(3,-1, "platform location check")
+	end
+	
+	local rad = entity.get_wire_connectors(true)
+	local working = data.status == defines.entity_status.working -- powered and not frozen
+	
+	local function config_combinator(dc, params, rg)
+		local ctrl = dc.get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
 		ctrl.parameters = params
 		
-		local rg = working and data.S.read[k]
+		rg = working and rg
 		local con = dc.get_wire_connectors(true)
 		
 		con[W.combinator_input_red  ].disconnect_all(HIDDEN)
 		con[W.combinator_input_green].disconnect_all(HIDDEN)
 		con[W.combinator_output_red  ].disconnect_all(HIDDEN)
 		con[W.combinator_output_green].disconnect_all(HIDDEN)
-		if rg and rg[1] then con[W.combinator_output_red  ].connect_to(radar[W.circuit_red  ], false, HIDDEN) end
-		if rg and rg[2] then con[W.combinator_output_green].connect_to(radar[W.circuit_green], false, HIDDEN) end
+		if rg and rg[1] then con[W.combinator_output_red  ].connect_to(rad[W.circuit_red  ], false, HIDDEN) end
+		if rg and rg[2] then con[W.combinator_output_green].connect_to(rad[W.circuit_green], false, HIDDEN) end
 	end
 	
-	local dcStat = data.dcs.Sta.get_wire_connectors(false)
-	local dcReq = data.dcs.Req.get_wire_connectors(false)
-	local dcOtw = data.dcs.Otw.get_wire_connectors(false)
-	local dcInv = data.dcs.Inv.get_wire_connectors(false)
+	config_combinator(dcs.Sta, params_sta, data.S.read.Sta)
+	config_combinator(dcs.Req, params_detail, data.S.read.Req)
+	config_combinator(dcs.Otw, params_detail, data.S.read.Otw)
+	config_combinator(dcs.Inv, params_detail, data.S.read.Inv)
+	config_combinator(dcs.Check, params_check)
+	
+	-- connect DCs to platform if platform initialized
+	local dcStat = dcs.Sta.get_wire_connectors(false)
+	local dcReq = dcs.Req.get_wire_connectors(false)
+	local dcOtw = dcs.Otw.get_wire_connectors(false)
+	local dcInv = dcs.Inv.get_wire_connectors(false)
+	local dcCheck = dcs.Check.get_wire_connectors(false)
 	local connected = false
+	
+	data.dcs = dcs
 	
 	if plat_data then
 		--game.print("reconnect!")
 		
+		local dcCheckG = dcCheck[W.combinator_output_green]
+		
+		local plLocCC = plat_data.readers.loc_cc.get_wire_connectors(true)
+		local plStat = plat_data.readers.stat.get_wire_connectors(true)
+		
+		local this_plat = radar_surf.platform and M.platform_valid(radar_surf.platform) and M.init_platform(radar_surf.platform) or nil
+		
+		dcCheck[W.combinator_input_red].connect_to(plLocCC[W.circuit_red], false, HIDDEN)
+		if this_plat then
+			local pl2LocCC = this_plat.readers.loc_cc.get_wire_connectors(true)
+			dcCheck[W.combinator_input_green].connect_to(pl2LocCC[W.circuit_green], false, HIDDEN)
+		end
+		
+		dcStat[W.combinator_input_red].connect_to(plStat[W.combinator_output_red], false, HIDDEN)
+		
 		if data.S.read_mode == "std" then
-			local rStat = plat_data.readers.stat.get_wire_connectors(true)
-			local rReq = plat_data.readers.req.get_wire_connectors(true)
-			local rOtw = plat_data.readers.otw_neg.get_wire_connectors(true)
-			local rInv = plat_data.readers.inv_neg.get_wire_connectors(true)
+			local plReq = plat_data.readers.req.get_wire_connectors(true)
 			
-			-- platform status to platform status on red wire
-			dcStat[W.combinator_input_red].connect_to(rStat[W.combinator_output_red], false, HIDDEN)
-			
-			-- platform raw requests to request on red wire
-			-- platform status to requests on green wire for planet check
-			dcReq[W.combinator_input_red].connect_to(rReq[W.combinator_output_red], false, HIDDEN)
-			dcReq[W.combinator_input_red].connect_to(rOtw[W.combinator_output_red], false, HIDDEN)
-			dcReq[W.combinator_input_red].connect_to(rInv[W.combinator_output_red], false, HIDDEN)
-			dcReq[W.combinator_input_green].connect_to(rStat[W.combinator_output_green], false, HIDDEN)
+			dcReq[W.combinator_input_red].connect_to(plReq[W.combinator_output_red], false, HIDDEN)
+			dcReq[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
 		else
-			local rStat = plat_data.readers.stat_raw.get_wire_connectors(true)
-			local rReq = plat_data.readers.req_raw.get_wire_connectors(true)
-			local rOtw = plat_data.readers.otw_raw.get_wire_connectors(true)
-			local rInv = plat_data.readers.inv_raw.get_wire_connectors(true)
+			local plReq = plat_data.readers.req_raw.get_wire_connectors(true)
+			local plOtw = plat_data.readers.otw_raw.get_wire_connectors(true)
+			local plInv = plat_data.readers.inv_raw.get_wire_connectors(true)
 			
-			-- platform status to platform status on red wire
-			dcStat[W.combinator_input_red].connect_to(rStat[W.circuit_red], false, HIDDEN)
-			dcReq[W.combinator_input_red].connect_to(rReq[W.circuit_red], false, HIDDEN)
-			dcOtw[W.combinator_input_red].connect_to(rOtw[W.circuit_red], false, HIDDEN)
-			dcInv[W.combinator_input_red].connect_to(rInv[W.circuit_red], false, HIDDEN)
-			
-			dcReq[W.combinator_input_green].connect_to(rStat[W.circuit_green], false, HIDDEN)
-			dcOtw[W.combinator_input_green].connect_to(rStat[W.circuit_green], false, HIDDEN)
-			dcInv[W.combinator_input_green].connect_to(rStat[W.circuit_green], false, HIDDEN)
+			dcReq[W.combinator_input_red].connect_to(plReq[W.combinator_output_red], false, HIDDEN)
+			dcReq[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
+			dcOtw[W.combinator_input_red].connect_to(plOtw[W.combinator_output_red], false, HIDDEN)
+			dcOtw[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
+			dcInv[W.combinator_input_red].connect_to(plInv[W.combinator_output_red], false, HIDDEN)
+			dcInv[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
 		end
 		
 		connected = true
 	end
-	
-	storage.polling_radars[id] = (not connected) and data or nil -- poll if not connected yet due to to platform build pending
 end
 
 ---@param data RadarData
 function M.refresh_radar(data)
 	local entity = data.entity
 	local id = data.id
-	game.print("refresh_radar: ".. serpent.block(data))
+	--game.print("refresh_radar: ".. serpent.block(data))
 	
 	-- write tags to ghosts on change (ui seems to get a copy, possibly because entity.tags is behind API which copies)
 	if entity.type == "entity-ghost" then
 		M.set_tags(entity, data.S)
-		return
+		return -- data is not in storage for ghost entities
 	end
 	
 	if data.S.mode == "comms" then
-		if data.dcs then
-			for _,v in pairs(data.dcs) do
-				v.destroy()
-			end
-			data.dcs = nil -- handle open in gui case
-		end
-		
-		if data.S.selected_channel == 1 then -- "[Global]"
-			M.reset_radar(id)
-		else
-			storage.radars[id] = data
-			storage.polling_radars[id] = nil
-		end
+		clear_dcs(data)
 	elseif data.S.mode == "platforms" then
-		refresh_platform_radar(id, entity, data)
-		storage.radars[id] = data
+		refresh_radar_platform_mode(id, entity, data)
 	end
 	
+	radar_channels.update_radar_channel(data)
+	
+	storage.radars[id] = data
 	--game.print("after refresh_radar: ".. serpent.block(data))
 end
 ---@param entity LuaEntity
 ---@param copy_settings RadarSettings?
 ---@return RadarData
 function M.init_radar(entity, copy_settings)
-	local S
-	if copy_settings then
-		S = util.table.deepcopy(copy_settings)
-	elseif entity.tags then -- handle allowing gui from ghost entities
-		S = entity.tags["hexcoder_radar_uplink"]
-	else
-		-- default settings if radar not registered in storage
-		-- Vanilla-equivalent global comms mode
-		S = { -- settings
-			mode = "comms",
-			selected_channel = 1, -- "[Global]"
-		}
-	end ---@cast S RadarSettings
-	
 	local id = entity.unit_number
 	local data = storage.radars[id]
 	if not data then
-		script.register_on_object_destroyed(entity)
+		local S
+		if copy_settings then
+			S = util.table.deepcopy(copy_settings)
+		elseif entity.tags then -- handle allowing gui from ghost entities
+			S = entity.tags["hexcoder_radar_uplink"]
+		else
+			-- default settings if radar not registered in storage
+			-- Vanilla-equivalent global comms mode
+			S = { -- settings
+				mode = "comms",
+				selected_channel = 1, -- "[Global]"
+			}
+		end ---@cast S RadarSettings
 		
 		data = {
 			id = id,
@@ -536,26 +650,32 @@ function M.init_radar(entity, copy_settings)
 			status = entity.status,
 			S = S
 		}
+		
+		if entity.type ~= "entity-ghost" then
+			add_to_poll_list(data)
+			
+			script.register_on_object_destroyed(entity)
+		end
 	end
 	
 	M.refresh_radar(data)
 	return data
 end
 
-function M.refresh_all_custom_radars(data)
-	for _,data in pairs(storage.radars) do
+---@param data RadarData
+function M.poll_radar(data)
+	assert(data.entity and data.entity.valid and data.entity.type == "radar")
+	
+	local new_status = data.entity.status ---@cast new_status -nil
+	if new_status ~= data.status then
+		data.status = new_status
 		M.refresh_radar(data)
 	end
 end
 
-function M.poll_radar_power(entity)
-	local data = storage.radars[entity.unit_number]
-	
-	if data and entity.status ~= data.status then
-		data.status = entity.status
-		
+function M.refresh_all_custom_radars()
+	for _,data in pairs(storage.radars) do
 		M.refresh_radar(data)
-		radar_channels.update_radar_channel(entity)
 	end
 end
 

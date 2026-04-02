@@ -1,42 +1,24 @@
 --[[
+TODO: migrations
+
+TODO: add enough features for platform read mode to support fully automated mixed rocket launches together with silo mod
+ -> need to be able to read requests without hard-selecting platforms
+ -> read total requests? Not sure if actually useful
+ -> read number of orbiting platforms / read number of platforms with requests
+ -> set selected platform to read by platform ID makes sense as it is already exposed in status
+ -> set selected platform to read by index / by id (how to reliably pick platform to send mixed launches to?)
+  -> radar tracks all orbiting platforms with non-zero requests sorted by id, circuit hard-selects number one of those via signal=1
+ -> select_platform R/G  P=id selects by id, K=idx selects by idx of platforms with active request, L=idx by index of all orbiting or so
+  -> want to avoid reading circuit every tick, but no event, so might have to poll at low rate
+  -> confirm signal sounds sensible for switching read target, but user can just keep sending same platform (but confirm signal might avoid user having to memory cell)
+
 TODO: make space age optional?
 TODO: figure out correct dependency versions?
-
-TODO: energy use: hide combinators in power graph, or make them not use power, accept that these signals work without power or add a (60 tick period) power check?
-
-TODO: radars can currently send data to other radars without power, how to fix?
-  Seems to be impossible without polling each radar, maybe just don't care?
-  Or could alternate and update each rader every 60th tick, then dis or reconnect to hub, this might be acceptable
 
 TODO: undo/redo? seems hard
 TODO: blueprint over? hacky workaround but maybe not that hard?
 TODO: copy paste? not really possible to to properly (with visual feedback?); but could fake using key events? not worth it if blueprint over works I think
 --]]
-
----@class player_index : integer
----@class unit_number : integer
----@class platform_index : integer
----@class surface_index : integer
----@class channel_id : number
-
----@class ModStorage
----@field settings ModSettings
----@field open_guis table<player_index, OpenGui>
----@field radars table<unit_number, RadarData>
----@field platforms table<platform_index, PlatformData>
----@field polling_radars table<unit_number, RadarData>
----@field polling_platforms table<platform_index, PlatformData>
----@field channels Channels
----@field polling Polling
-	
----@class Polling
----@field cur integer
----@field hole integer?
----@field list LuaEntity[]
----@field listsz integer
-
----@class ModSettings
----@field allow_interpl boolean
 
 ---@type ModStorage
 storage = storage
@@ -56,81 +38,40 @@ local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
 local radar_gui = require("script.radar_gui")
 
--- tick certain things at 10x per second to reduce load, is this a good idea or should we 'stagger' entity ticks?
-script.on_nth_tick(6, function(event)
+script.on_nth_tick(12, function(event)
 	-- poll when gui is open to react to player walking out of reach of radar
-	for player_i, gui in pairs(storage.open_guis) do
-		local player = game.get_player(player_i) ---@cast player -nil
-		radar_gui.tick_gui(player, gui)
-	end
-	
-	-- poll radars in rare case of trying to connect to platform still being built
-	for _,data in ipairs(storage.polling_radars) do
-		radars.refresh_radar(data)
+	for player_id, gui in pairs(storage.open_guis) do
+		local player = game.get_player(player_id)
+		if player then
+			radar_gui.tick_gui(player, gui)
+		end
 	end
 	
 	-- poll platforms that are currently moving to display real time status
-	for _,data in ipairs(storage.polling_platforms) do
-		radars.update_platform_status(data)
+	--for _,data in pairs(storage.polling_platforms) do
+	-- Do this for all platform right now, to fix requests not reacting to user toggling sections
+	for _,data in pairs(storage.platforms) do
+		radars.poll_platform(data)
 	end
 end)
-
-local poll_period = 60
 
 script.on_event(defines.events.on_tick, function(event)
-	local p = storage.polling
-	if not p then return end
-	local cur = p.cur
-	local hole = p.hole
-	local list = p.list
+	--if not storage.polling_radars_cur then return end
 	
-	-- update entire list and thus each entity exactly once every poll_period
-	-- also automatically remove invalid entries and progressively compact list
-	local ratio = (event.tick % poll_period) + 1 -- +1 only works with tick freq=1, poll_period must be divisible by this, so 1 is good
-	local last = math.ceil((ratio / poll_period) * p.listsz)
+	-- update entire list and thus each entity exactly once every period
+	local period = storage.settings.poll_period
+	local list = storage.polling_radars
+	local ratio = (event.tick % period) + 1 -- +1 only works with tick freq=1, period must be divisible by this, so 1 is good
+	local last = math.ceil((ratio / period) * #list)
 	
-	for i=cur,last do
-		local e = list[i]
-		if e and e.valid then
-			--game.print(string.format("tick: %d poll %d", event.tick % poll_freq, i))
-			
-			radars.poll_radar_power(e)
-			
-			if hole then
-				list[hole] = e
-				list[i] = nil -- This allows list to auto-shrink, but breaks #list, but prefer this over keeping holes with valid values
-				hole = hole + 1
-			end
-		elseif not hole then
-			hole = i
-		end
-		
-		--game.print("poll ".. i)
-	end
-	cur = last+1
-	
-	if ratio == poll_period then -- end of list reached
-		cur = 1
-		hole = nil
+	for i=storage.polling_radars_cur,last do
+		radars.poll_radar(list[i])
 	end
 	
-	p.cur = cur
-	p.hole = hole
-end)
-
-local function poll_register_radar(entity)
-	local idx = storage.polling.listsz + 1
-	storage.polling.list[idx] = entity
-	storage.polling.listsz = idx
-end
-
-commands.add_command("hexcoder_radar_uplink-poll_init", nil, function(command)
-	storage.polling = { cur=1, list={}, listsz=0 }
-	for _, surface in pairs(game.surfaces) do
-		local radars = surface.find_entities_filtered{ type="radar", name="radar" }
-		for _, r in ipairs(radars) do
-			poll_register_radar(r)
-		end
+	if ratio == period then -- end of list reached
+		storage.polling_radars_cur = 1
+	else
+		storage.polling_radars_cur = last+1
 	end
 end)
 
@@ -143,16 +84,7 @@ local function on_created_entity(event)
 	
 	local copy_settings = (event.tags and event.tags["hexcoder_radar_uplink"])
 	                   or (event.source and storage.radars[event.source.unit_number].S)
-	if copy_settings then
-		radars.init_radar(entity, copy_settings)
-	end
-	
-	-- This needs to happen for all radars
-	poll_register_radar(entity)
-	radar_channels.update_radar_channel(entity)
-end
-local function on_entity_removed(event)
-	radar_channels.update_radar_channel(event.entity)
+	radars.init_radar(entity, copy_settings)
 end
 
 for _, event in ipairs({
@@ -165,14 +97,9 @@ for _, event in ipairs({
 }) do
 	script.on_event(event, on_created_entity, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
 end
-for _, event in ipairs({
-	defines.events.on_entity_died,
-	defines.events.on_player_mined_entity,
-	defines.events.on_robot_pre_mined,
-	defines.events.on_space_platform_pre_mined,
-}) do
-	script.on_event(event, on_entity_removed, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
-end
+
+-- TODO: handle script_raised_teleported ? Liekly super rare but easy to handle (tempS=data.S, delete_radar + init_radar(, tempS))
+
 -- for all radars: if dies apply tags to ghost to keep settings on revive
 script.on_event(defines.events.on_post_entity_died, function(event)
 	--game.print("on_post_radar_died: ".. serpent.block({event}))
@@ -181,7 +108,7 @@ script.on_event(defines.events.on_post_entity_died, function(event)
 	end
 end, {{filter = "type", type = "radar"}})
 
--- for custom entities with custom settings, close any gui and call reset_radar/reset_platform
+-- for custom entities with custom settings, close any gui and call delete_radar/delete_platform
 script.on_event(defines.events.on_object_destroyed, function(event)
 	--game.print("on_object_destroyed: ".. serpent.line(event))
 	for player_i, gui in pairs(storage.open_guis) do
@@ -192,9 +119,9 @@ script.on_event(defines.events.on_object_destroyed, function(event)
 	end
 	
 	if event.type == defines.target_type.entity then
-		radars.reset_radar(event.useful_id)
+		radars.delete_radar(event.useful_id)
 	else
-		radars.reset_platform(event.useful_id)
+		radars.delete_platform(event.useful_id)
 	end
 end)
 
@@ -233,41 +160,57 @@ for _, event in ipairs({
 	defines.events.on_surface_imported,
 }) do script.on_event(event, function(event)
 	--game.print(">> on_surface_event: ".. serpent.block(event))
-	radar_channels.on_surface_event(event.surface_index, game.surfaces[event.surface_index])
+	radar_channels.on_surface_event(event.surface_index)
 end) end
 
 ---- init
 
+---@class player_index : integer
+---@class unit_number : integer
+---@class platform_index : integer
+---@class surface_index : integer
+---@class channel_id : number
+
+---@class ModStorage
+---@field settings ModSettings
+---@field open_guis table<player_index, OpenGui>
+---@field radars table<unit_number, RadarData>
+---@field platforms table<platform_index, PlatformData>
+-- ---@field polling_platforms table<platform_index, PlatformData>
+---@field channels Channels
+---@field polling_radars RadarData[]
+---@field polling_radars_cur integer
+
+---@class ModSettings
+---@field allow_interpl boolean
+---@field poll_period integer
+
 local function init(event)
 	storage.settings = {
-		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]]
+		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]],
+		poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value --[[@as integer]],
 	}
 	storage.open_guis = {}
 	storage.radars = {}
 	storage.platforms = {} 
-	storage.polling_radars = {}
-	storage.polling_platforms = {}
+	--storage.polling_platforms = {}
 	storage.channels = { next_id=1, map={}, surfaces={} }
-	storage.polling = { cur=1, list={}, listsz=0 }
+	storage.polling_radars = {}
+	storage.polling_radars_cur = 1
 	
 	local ch = radar_channels.create_new_channel()
 	ch.name = "[Global]"
 	ch.is_interplanetary = false
 	
 	for _, surface in pairs(game.surfaces) do
-		radar_channels.on_surface_event(surface.index, surface)
+		for _, r in ipairs(surface.find_entities_filtered{ type="radar", name="radar" }) do
+			radars.init_radar(r)
+		end
 	end
 end
-local function _reset(event) -- allow me to fix outdated state during dev
+local function _reset() -- allow me to fix outdated state during dev
 	for _, player in pairs(game.players) do player.opened = nil end
-	storage.settings = nil
-	storage.open_guis = nil
-	storage.radars = nil
-	storage.platforms = nil
-	storage.polling_radars = nil
-	storage.polling_platforms = nil
-	storage.channels = nil
-	storage.polling = nil
+	storage = {}
 	
 	for _, s in pairs(game.surfaces) do
 		for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-cc" }) do
@@ -297,10 +240,12 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
 		radars.refresh_all_custom_radars()
 		radar_channels.update_all_channels_is_interplanetary()
 	end
+	
+	storage.settings.poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
 end)
 
 ---- debugging
-
+--[[
 local function debug_vis_wires(surface, time_to_live, origin)
 	local function _vis(entities)
 		for _, w in ipairs({
@@ -350,6 +295,7 @@ commands.add_command("hexcoder_radar_uplink-vis", nil, function(command)
 	--	game.print(k ..": ".. serpent.line(v))
 	--end
 end)
+]]
 commands.add_command("hexcoder_radar_uplink-reset", nil, function(command)
 	_reset()
 end)

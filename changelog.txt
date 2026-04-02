@@ -1,5 +1,15 @@
 ---------------------------------------------------------------------------------------------------
-Version: 0.1.1
+Version: 0.1.3
+Date: 01. 04. 2026
+  Changes:
+    - Added polling to radars with customizable rate for power check
+    - Added power check so comms and platform signals no longer work without power
+  Bugfixes:
+    - Fixed error when configuring radars to read platform while placed on platform
+    - Correctly update platform requests (in raw mode) when platforms are in transit
+    - Requests did not update when logistics section in platform hub was toggled due to unexpected limitation of API, now updates in sub-second tick handler
+---------------------------------------------------------------------------------------------------
+Version: 0.1.2
 Date: 30. 03. 2026
   Info:
     - Fix changelog and thumbnail.

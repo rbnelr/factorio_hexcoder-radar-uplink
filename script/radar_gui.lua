@@ -1,6 +1,6 @@
 ---@class OpenGui
 ---@field refs table
----@field data RadarData
+---@field data RadarData -- Hold reference to data in storage for opened radar, or independent data if opening gui on ghost entity (created from tags)
 ---@field drop_down_platforms platform_index[]
 ---@field drop_down_channels channel_id[]
 
@@ -69,19 +69,21 @@ local function radar_gui_update_platforms(gui, data)
 	if force then
 		for i, platf in pairs(force.platforms) do
 			--game.print(" > ".. i .."platform ".. platf.name)
-			
-			local suffix = ""
-			if not radars.platform_valid(platf) then suffix = " (Not fully built)"
-			elseif platf.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000][virtual-signal=signal-trash-bin] (Scheduled for deletion)[/color]" end
-			
-			drop_down_strings[counter] = platf.name..suffix
-			drop_down_platforms[counter] = platf.index
-			
-			-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
-			if data.S.selected_platform == platf.index then
-				sel_idx = counter
+			if radars.platform_valid(platf) then
+				local suffix = ""
+				--if not radars.platform_valid(platf) then suffix = " (Not fully built)"
+				--else
+				if platf.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000][virtual-signal=signal-trash-bin] (Scheduled for deletion)[/color]" end
+				
+				drop_down_strings[counter] = platf.name..suffix
+				drop_down_platforms[counter] = platf.index
+				
+				-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
+				if data.S.selected_platform == platf.index then
+					sel_idx = counter
+				end
+				counter = counter+1
 			end
-			counter = counter+1
 		end
 	end
 	
@@ -185,7 +187,6 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 		if ch then
 			ch.is_interplanetary = refs.ch_interplanetary.state
 			radar_channels.update_is_interplanetary(ch.id)
-			radar_channels.update_radar_channel(data.entity)
 		end
 	end
 	
@@ -194,11 +195,6 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 	
 	data.S = S
 	radars.refresh_radar(data)
-	
-	if event.element.name == "mode_comms" or
-	   event.element.name == "mode_platforms" then
-		radar_channels.update_radar_channel(data.entity)
-	end
 end)
 script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 	--game.print("on_gui_selection_state_changed: ".. serpent.block(event))
@@ -222,8 +218,6 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		radar_gui_update_channels(gui, data)
 		
 		radars.refresh_radar(data)
-		
-		radar_channels.update_radar_channel(data.entity)
 	end
 	
 end)
@@ -271,7 +265,6 @@ local function create_radar_gui(player, entity)
 	local request_otw_desc = {"tooltip.hexcoder_radar_uplink-request_otw_desc"}
 	local request_inv_desc = {"tooltip.hexcoder_radar_uplink-request_inv_desc"}
 	
-	local tick1 = {"tooltip.hexcoder_radar_uplink-tick1_suffix"}
 	local tick2 = {"tooltip.hexcoder_radar_uplink-tick2_suffix"}
 	
 	local function circuit_enable(name, caption, tooltip, tooltip_suffix)
@@ -296,10 +289,12 @@ local function create_radar_gui(player, entity)
 		GUI{type="line", style={margin={8,0,8,0}}},
 		gui_hflow{style={bottom_margin=8}}:add{
 			GUI{type="label", caption="Name", style={margin={4,6,0,0}}},
-			GUI{type="textfield", name="ch_name", text="" }, -- default height 28
-			GUI{type="sprite-button", name="ch_delete", style={base="red_button", size={28, 28}, padding={0,0,0,0}}, sprite="utility/trash", tooltip="Delete channel" },
+			GUI{type="textfield", name="ch_name", text="", tooltip="Rename channel (connected radars stay connected)" }, -- default height 28
+			GUI{type="sprite-button", name="ch_delete", style={base="red_button", size={28, 28}, padding={0,0,0,0}},
+				sprite="utility/trash", tooltip="Delete channel (universally for all radars)" },
 		},
-		GUI{type="checkbox", name="ch_interplanetary", caption="Interplanetary", state=false, tooltip="Does this channel connect to all surfaces?" },
+		GUI{type="checkbox", name="ch_interplanetary", caption="Interplanetary", state=false,
+			tooltip="Does this channel connect to all surfaces?\n(Can be disabled in settings)" },
 	}
 	local platforms_pane = gui_vpane("platforms_pane"):add{
 		gui_hflow{}:add{
@@ -316,10 +311,10 @@ local function create_radar_gui(player, entity)
 			circuit_enable("pl_readReq", "Read platform unfulfilled requests", request_unful_req_desc,tick2),
 		},
 		gui_vflow{name="pl_raw"}:add{
-			circuit_enable("pl_readRawSta", "Read platform status",       status_desc,tick1),
-			circuit_enable("pl_readRawReq", "Read platform requests",     request_req_desc,tick1),
-			circuit_enable("pl_readRawOtw", "Read platform 'on the way'", request_otw_desc,tick1),
-			circuit_enable("pl_readRawInv", "Read platform inventory",    request_inv_desc,tick1),
+			circuit_enable("pl_readRawSta", "Read platform status",       status_desc,tick2),
+			circuit_enable("pl_readRawReq", "Read platform requests",     request_req_desc,tick2),
+			circuit_enable("pl_readRawOtw", "Read platform 'on the way'", request_otw_desc,tick2),
+			circuit_enable("pl_readRawInv", "Read platform inventory",    request_inv_desc,tick2),
 		}
 	}
 	

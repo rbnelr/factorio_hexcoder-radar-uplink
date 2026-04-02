@@ -8,10 +8,18 @@ data:extend({
 		default_value = true
 	},
 	{
+		type = "int-setting",
+		name = "hexcoder_radar_uplink-radar_poll_period",
+		localised_name = "Polling interval for each radar (Performance)",
+		localised_description = "Main logic is implemented using hidden circuits, but checking if radars have power requires polling.\nSet higher for better performance with high numbers of radars",
+		setting_type = "runtime-global",
+		default_value = 60, minimum_value = 1, maximum_value = 1800
+	},
+	{
 		type = "bool-setting",
 		name = "hexcoder_radar_uplink-debug",
 		localised_name = "Debug Mode",
-		localised_description = "Visualize hidden wires etc.\nHidden things appear for newly configured radars or platforms only. Use full reset (/hexcoder_radar_uplink-reset)",
+		localised_description = "Developer setting to visualize hidden combinators and wires\nMight require full reset (/hexcoder_radar_uplink-reset)",
 		setting_type = "startup",
 		default_value = false
 	}

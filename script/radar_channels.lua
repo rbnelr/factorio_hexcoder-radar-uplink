@@ -27,7 +27,7 @@ local function update_channel_surface_links(id)
 	local channel = storage.channels.map[id]
 	if not channel then return end
 	
-	channel.is_interplanetary = channel.is_interplanetary and storage.settings.allow_interpl
+	channel.is_interplanetary = channel.is_interplanetary and storage.settings.allow_interpl --[[@as boolean]]
 	
 	local prevR = nil
 	local prevG = nil
@@ -156,29 +156,21 @@ end
 local function channel_switch(entity, id, surface)
 	--game.print(">> channel_switch: ".. serpent.line({ entity, channel_name, surface }))
 	
-	-- true: create connector: if no current connections, would otherwise return nil
 	local conR = entity.get_wire_connectors(true)[W.circuit_red]
 	local conG = entity.get_wire_connectors(true)[W.circuit_green]
 	
-	--local old_hub = nil
 	for _, c in ipairs(conR.connections) do
 		if c.origin == HIDDEN and (c.target.owner.name == "hexcoder_radar_uplink-cc") then
-				--or c.target.owner.name == "radar") then --dbg
 			conR.disconnect_from(c.target, HIDDEN)
-			--old_hub = c.target.owner
 		end
 	end
 	for _, c in ipairs(conG.connections) do
 		if c.origin == HIDDEN and (c.target.owner.name == "hexcoder_radar_uplink-cc") then
-				--or c.target.owner.name == "radar") then --dbg
 			conG.disconnect_from(c.target, HIDDEN)
 		end
 	end
-	--conR.disconnect_all(defines.wire_origin.script) --dbg
-	--conG.disconnect_all(defines.wire_origin.script) --dbg
 	
 	if id > 0 then -- 0 is [None] channel
-		-- enter channel
 		local hubs = init_channel(surface, id)
 		if hubs then
 			local cc = hubs.hub.get_wire_connectors(true)
@@ -187,25 +179,21 @@ local function channel_switch(entity, id, surface)
 		end
 	end
 end
----@param entity LuaEntity
-function M.update_radar_channel(entity)
-	local data = storage.radars[entity.unit_number]
+---@param data RadarData
+function M.update_radar_channel(data)
 	--game.print(">> update_radar_channel: ".. serpent.block(data))
 	
-	local channel_id = 1 -- [Global] channel
-	if data then
-		channel_id = 0 -- [None] channel
-		if data.S.mode == "comms" then
-			channel_id = data.S.selected_channel or 1
-		end
+	local channel_id = 0 -- [None] channel
+	if data.S.mode == "comms" and data.S.selected_channel and data.status == defines.entity_status.working then
+		channel_id = data.S.selected_channel
 	end
+	---@cast channel_id channel_id
 	
-	channel_switch(entity, channel_id, entity.surface)
+	channel_switch(data.entity, channel_id, data.entity.surface)
 end
 
 ---@param surf_id surface_index
----@param surface LuaSurface
-function M.on_surface_event(surf_id, surface)
+function M.on_surface_event(surf_id)
 	local surf = storage.channels.surfaces[surf_id]
 	if surf then
 		-- delete surface data
@@ -213,13 +201,6 @@ function M.on_surface_event(surf_id, surface)
 			destroy_hubs(surf, id)
 		end
 		storage.channels.surfaces[surf_id] = nil
-	end
-	
-	if surface then -- on_surface_deleted surface is already deleted
-		local radars = surface.find_entities_filtered{ type="radar", name="radar" }
-		for _, radar in ipairs(radars) do
-			M.update_radar_channel(radar)
-		end
 	end
 end
 
