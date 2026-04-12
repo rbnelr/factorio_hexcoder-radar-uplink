@@ -183,16 +183,18 @@ function update_platform_pod_deliveries(plat)
 	local data = storage.platforms[plat.index]
 	if not data then return end
 	
+	local signals = {}
+	
 	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
 	local logi = plat.hub.get_logistic_point(defines.logistic_member_index.cargo_landing_pad_requester)
-	
-	local signals = {}
-	for _, item in ipairs(logi.targeted_items_deliver) do
-		if item.count > 0 then
-			table.insert(signals, {
-				value = { type="item", name=item.name, quality=item.quality },
-				min = item.count
-			})
+	if logi and logi.targeted_items_deliver then
+		for _, item in ipairs(logi.targeted_items_deliver) do
+			if item.count > 0 then
+				table.insert(signals, {
+					value = { type="item", name=item.name, quality=item.quality },
+					min = item.count
+				})
+			end
 		end
 	end
 	

@@ -19,7 +19,7 @@ data:extend({
 		type = "bool-setting",
 		name = "hexcoder_radar_uplink-debug",
 		localised_name = "Debug Mode",
-		localised_description = "Developer setting to visualize hidden combinators and wires\nMight require full reset (/hexcoder_radar_uplink-reset)",
+		localised_description = "Developer setting to visualize hidden combinators",
 		setting_type = "startup",
 		default_value = false
 	}
