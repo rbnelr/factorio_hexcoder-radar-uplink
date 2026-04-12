@@ -18,7 +18,7 @@ local function radar_gui_update_channels(gui, data)
 	local drop_down_strings = {"[None]"}
 	local drop_down_channels = {0}
 	local counter = 2 -- next channel in list
-	local sel_idx = nil
+	local sel_idx = 1
 	
 	for id, ch in pairs(storage.channels.map) do
 		drop_down_strings[counter] = ch.name
@@ -32,11 +32,6 @@ local function radar_gui_update_channels(gui, data)
 	
 	drop_down_strings[counter] = "[Create new channel]"
 	drop_down_channels[counter] = -1
-	
-	if not sel_idx then
-		data.S.selected_channel = 0
-		sel_idx = 1 -- [None]
-	end
 	
 	gui.drop_down_channels = drop_down_channels
 	gui.refs.ch_drop_down.items = drop_down_strings
@@ -54,7 +49,6 @@ end
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)
 -- I think setting drop_down.items while it is open breaks it (?)
--- Keep track of platform by LuaPlatform not name, not sure if this is ideal or if by name would be better
 ---@param gui OpenGui
 ---@param data RadarData
 local function radar_gui_update_platforms(gui, data)
@@ -63,11 +57,11 @@ local function radar_gui_update_platforms(gui, data)
 	local drop_down_strings = {"[None]"}
 	local drop_down_platforms = {nil}
 	local counter = 2 -- next platform in list
-	local sel_idx = nil
+	local sel_idx = 1
 	
 	local force = data.entity and data.entity.valid and data.entity.force
 	if force then
-		for i, platf in pairs(force.platforms) do
+		for id, platf in pairs(force.platforms) do
 			--game.print(" > ".. i .."platform ".. platf.name)
 			if radars.platform_valid(platf) then
 				local suffix = ""
@@ -76,20 +70,15 @@ local function radar_gui_update_platforms(gui, data)
 				if platf.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000][virtual-signal=signal-trash-bin] (Scheduled for deletion)[/color]" end
 				
 				drop_down_strings[counter] = platf.name..suffix
-				drop_down_platforms[counter] = platf.index
+				drop_down_platforms[counter] = id
 				
 				-- if platform still found in list (by identity, not name), keep it selected, if not select [None]
-				if data.S.selected_platform == platf.index then
+				if data.S.selected_platform == id then
 					sel_idx = counter
 				end
 				counter = counter+1
 			end
 		end
-	end
-	
-	if not sel_idx then -- selected_platform not found, it could have been deleted
-		data.S.selected_platform = nil
-		sel_idx = 1 -- [None]
 	end
 	
 	gui.drop_down_platforms = drop_down_platforms
@@ -100,7 +89,7 @@ end
 -- init ui from data
 ---@param gui OpenGui
 ---@param data RadarData
-local function radar_update_gui(gui, data)
+local function radar2gui(gui, data)
 	radar_gui_update_channels(gui, data)
 	radar_gui_update_platforms(gui, data)
 	
@@ -136,50 +125,42 @@ local function radar_update_gui(gui, data)
 	radars.refresh_radar(data)
 end
 
+local MODES = {
+	["mode_comms"]="comms",
+	["mode_platforms"]="platforms",
+}
+local READ_MODES = {
+	["pl_readStd"]="std",
+	["pl_readRaw"]="raw",
+}
+
 -- update data from ui
 script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 	--game.print("on_gui_checked_state_changed: ".. serpent.block(event))
 	local gui = storage.open_guis[event.player_index]
 	if not gui then return end
 	local refs = gui.refs
-	local data = gui.data
-	-- build new settings to avoid storing settings not relevant to current mode
-	-- NOTE: this means keeping all settings while gui is open (stored in gui state)
-	--  but closing the gui resets settings that are in hidden panes
-	local S = { mode = data.S.mode or "comms" }
 	
-	if refs.mode_platforms.state then S.mode = "platforms" end
-	if     event.element.name == "mode_comms" then S.mode = "comms"
-	elseif event.element.name == "mode_platforms" then S.mode = "platforms" end
-	refs.mode_comms.state = S.mode == "comms"
-	refs.mode_platforms.state = S.mode == "platforms"
+	local mode = radiobutton_changed(event.element.name, refs, MODES)
 	
-	if S.mode == "platforms" then
+	local S = { mode=mode }
+	if mode == "platforms" then
 		S.selected_platform = gui.drop_down_platforms[gui.refs.pl_drop_down.selected_index]
 		
-		local raw = refs.pl_readRaw.state
-		if     event.element.name == "pl_readStd" then raw = false
-		elseif event.element.name == "pl_readRaw" then raw = true end
-		refs.pl_readStd.state = raw == false
-		refs.pl_readRaw.state = raw == true
+		local read_mode = radiobutton_changed(event.element.name, refs, READ_MODES)
 		
-		S.read_mode = raw and "raw" or "std"
+		local prefix = read_mode == "std" and "pl_read" or "pl_readRaw"
 		local state = {}
-		if raw == false then
-			for k,_ in pairs(radars.radar_defaults.pl_std) do
-				state[k] = { refs["pl_read"..k.."R"].state,
-				             refs["pl_read"..k.."G"].state }
-			end
-		else
-			for k,_ in pairs(radars.radar_defaults.pl_raw) do
-				state[k] = { refs["pl_readRaw"..k.."R"].state,
-				             refs["pl_readRaw"..k.."G"].state }
-			end
+		for k,_ in pairs(radars.radar_defaults["pl_"..read_mode]) do
+			state[k] = { refs[prefix..k.."R"].state,
+			             refs[prefix..k.."G"].state }
 		end
+		
+		S.read_mode = read_mode
 		S.read = state
 		
-		refs.pl_std.visible = S.read_mode == "std"
-		refs.pl_raw.visible = S.read_mode == "raw"
+		refs.pl_std.visible = read_mode == "std"
+		refs.pl_raw.visible = read_mode == "raw"
 	else
 		S.selected_channel = gui.drop_down_channels[gui.refs.ch_drop_down.selected_index]
 		
@@ -193,8 +174,8 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 	refs.comms_pane.visible = refs.mode_comms.state
 	refs.platforms_pane.visible = refs.mode_platforms.state
 	
-	data.S = S
-	radars.refresh_radar(data)
+	gui.data.S = S
+	radars.refresh_radar(gui.data)
 end)
 script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 	--game.print("on_gui_selection_state_changed: ".. serpent.block(event))
@@ -219,7 +200,6 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		
 		radars.refresh_radar(data)
 	end
-	
 end)
 script.on_event(defines.events.on_gui_click, function(event)
 	local gui = storage.open_guis[event.player_index]
@@ -257,16 +237,17 @@ end)
 
 ---@param player LuaPlayer
 ---@param entity LuaEntity
----@return LuaGuiElement
+---@returns LuaGuiElement
 local function create_radar_gui(player, entity)
-	local comms_desc = {"tooltip.hexcoder_radar_uplink-comms_mode_desc"}
-	local platforms_desc = {"tooltip.hexcoder_radar_uplink-platforms_mode_desc"}
+	local comms_desc = {"tooltip.hexcoder_radar_uplink-read_comms_mode_desc"}
+	local platforms_desc = {"tooltip.hexcoder_radar_uplink-read_platforms_mode_desc"}
 	
-	local status_desc = {"tooltip.hexcoder_radar_uplink-status_desc"}
-	local request_unful_req_desc = {"tooltip.hexcoder_radar_uplink-request_unful_req_desc"}
-	local request_req_desc = {"tooltip.hexcoder_radar_uplink-request_req_desc"}
-	local request_otw_desc = {"tooltip.hexcoder_radar_uplink-request_otw_desc"}
-	local request_inv_desc = {"tooltip.hexcoder_radar_uplink-request_inv_desc"}
+	local status_desc = {"tooltip.hexcoder_radar_uplink-read_status_desc"}
+	local unful_req_desc = {"tooltip.hexcoder_radar_uplink-read_unful_req_desc"}
+	local req_desc = {"tooltip.hexcoder_radar_uplink-read_req_desc"}
+	local otw_desc = {"tooltip.hexcoder_radar_uplink-read_otw_desc"}
+	local inv_desc = {"tooltip.hexcoder_radar_uplink-read_inv_desc"}
+	local inv_slots_desc = {"tooltip.hexcoder_radar_uplink-read_inv_slots_desc"}
 	
 	local tick2 = {"tooltip.hexcoder_radar_uplink-tick2_suffix"}
 	
@@ -311,13 +292,14 @@ local function create_radar_gui(player, entity)
 		},
 		gui_vflow{name="pl_std"}:add{
 			circuit_enable("pl_readSta", "Read platform status",               status_desc,tick2),
-			circuit_enable("pl_readReq", "Read platform unfulfilled requests", request_unful_req_desc,tick2),
+			circuit_enable("pl_readReq", "Read platform unfulfilled requests", unful_req_desc,tick2),
 		},
 		gui_vflow{name="pl_raw"}:add{
 			circuit_enable("pl_readRawSta", "Read platform status",       status_desc,tick2),
-			circuit_enable("pl_readRawReq", "Read platform requests",     request_req_desc,tick2),
-			circuit_enable("pl_readRawOtw", "Read platform 'on the way'", request_otw_desc,tick2),
-			circuit_enable("pl_readRawInv", "Read platform inventory",    request_inv_desc,tick2),
+			circuit_enable("pl_readRawReq", "Read platform requests",     req_desc,tick2),
+			circuit_enable("pl_readRawOtw", "Read platform 'on the way'", otw_desc,tick2),
+			circuit_enable("pl_readRawInv", "Read platform inventory",    inv_desc,tick2),
+			circuit_enable("pl_readRawInvSlots", "Read platform inventory slots", inv_slots_desc,tick2),
 		}
 	}
 	
@@ -334,30 +316,31 @@ local function create_radar_gui(player, entity)
 	local gui = { refs=refs, data=data }
 	storage.open_guis[player.index] = gui
 	
-	radar_update_gui(gui, data)
+	radar2gui(gui, data)
 	
 	return window
 end
 
 ---- custom entity gui
-local _skip_closing_sound = nil
+local _skip_closing_sound = nil -- ugly state passed between event that trigger other event directly, I don't think this can desync
 local function can_open_entity_gui(player, entity)
 	return entity.valid and player.force == entity.force and player.can_reach_entity(entity)
 end
 -- TODO: enable configuring ghosts? If that is done, can I keep settings on building correctly? via tags? will gui stay open during build process?
 script.on_event("hexcoder_radar_uplink-open-gui", function(event) ---@cast event EventData.CustomInputEvent
 	--game.print("open-gui: ".. serpent.block(event))
-	if not event.selected_prototype or not
-	      (event.selected_prototype.name == "radar" or event.selected_prototype.name == "entity-ghost") then
+	if not event.selected_prototype then
 		return
 	end
 	
 	local player = game.get_player(event.player_index) ---@cast player -nil
 	local entity = player.selected -- hovered entity or ghost
 	
+	if not (entity and entity.valid and radars.is_radar(entity)) then return end
+	
 	local free_cursor = not (player.cursor_stack.valid_for_read or player.cursor_ghost or player.cursor_record)
 	
-	if free_cursor and entity and entity.valid and can_open_entity_gui(player, entity) then
+	if free_cursor and can_open_entity_gui(player, entity) then
 		-- keep gui open if exact entity already open
 		local gui = player.opened and storage.open_guis[player.index]
 		if gui and entity.unit_number == gui.data.id then return end

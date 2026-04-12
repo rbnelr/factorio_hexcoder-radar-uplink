@@ -67,7 +67,7 @@ function M.update_all_channels_is_interplanetary()
 	end
 end
 
----@return Channel
+---@returns Channel
 function M.create_new_channel()
 	local chs = storage.channels
 	local ch = { id=chs.next_id, name="New channel", is_interplanetary=false }
@@ -107,7 +107,7 @@ end
 -- init channel for surface, if the same channel get connected to from other surface, their link_hub will be connected
 ---@param surface LuaSurface
 ---@param id channel_id
----@return ChannelHubs?
+---@returns ChannelHubs?
 local function init_channel(surface, id)
 	local channel = storage.channels.map[id]
 	if not channel then return nil end -- blueprinting not correct for channels

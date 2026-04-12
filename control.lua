@@ -1,8 +1,16 @@
 --[[
-TODO: migrations
+TODO: make sure open/close sounds actually count as gui sounds, so gui sound volume slider actually affects it
+ -> probably should actually assign it as radar.open_sound in data-updates, even if still have to play it manually
 
-TODO: channel delete bug probably was gui vs data desync, causing delete to happen on none channel
- -> should fix gui desync! retained mode gui suck!
+TODO: rewrite gui to be less bad at next opportunity
+TODO: switch channels over to being keyed on string again, this is safer to blueprint etc. (should switch platform as well!) (rename from gui should just update others or update on after asking)
+ -> only show local channels and global ones exposed via interplanetary flag in gui
+  -> make channels get lazily created by name per surface (from gui), -> set up hubs and already connect according to rules (which surfaces can connect to? search all of them for channels of same name)
+  -> make gui figure out all "nearby channels", on_surface + planet<->platform + platform<->platform for direct space conn + any universal ones etc.
+   -> on gui select switch to channel by rewiring
+   -> update connections if rules change (like platform leaving orbit) -> cuts hubs connections but keeps channels selected
+   -> only delete channels manually, but only create hubs on surface where radar has created or selected channel (channels won't pollute other surfaces unless connected to once?)
+   -> sort drop down menu?
 
 TODO: add enough features for platform read mode to support fully automated mixed rocket launches together with silo mod
  -> need to be able to read requests without hard-selecting platforms
@@ -34,8 +42,8 @@ end
 netR = {red=true, green=false}
 netG = {red=false, green=true}
 W = defines.wire_connector_id
---HIDDEN = dbg and defines.wire_origin.player or defines.wire_origin.script
-HIDDEN = defines.wire_origin.script
+HIDDEN = dbg and defines.wire_origin.player or defines.wire_origin.script
+--HIDDEN = defines.wire_origin.script
 
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
@@ -148,7 +156,7 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
 	
 	for i, bp_entity in pairs(entities) do
 		if bp_entity.name == "radar" then
-			mapping = mapping or event.mapping.get()
+			mapping = mapping or event.mapping.get() --[[@as LuaEntity]]
 			if radars.settings_to_tags(bp_entity, mapping[i].unit_number) then
 				-- need to modify name somehow if entity has custom name and and ghost version does not match somehow? (protocol_1903 [pY] on discord)
 				changed = true
@@ -203,7 +211,8 @@ end)
 ---@field allow_interpl boolean
 ---@field poll_period integer
 
-local function init(clean)
+local function init()
+	storage = {}
 	storage.settings = {
 		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]],
 		poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value --[[@as integer]],
@@ -220,17 +229,14 @@ local function init(clean)
 	ch.name = "[Global]"
 	ch.is_interplanetary = false
 	
-	if not clean then
-		for _, surface in pairs(game.surfaces) do
-			for _, r in ipairs(surface.find_entities_filtered{ type="radar", name="radar" }) do
-				radars.init_radar(r)
-			end
+	for _, surface in pairs(game.surfaces) do
+		for _, r in ipairs(surface.find_entities_filtered{ type="radar", name="radar" }) do
+			radars.init_radar(r)
 		end
 	end
 end
 local function _reset() -- allow me to fix outdated state during dev
 	for _, player in pairs(game.players) do player.opened = nil end
-	storage = {}
 	
 	for _, s in pairs(game.surfaces) do
 		for _, name in pairs({"cc","dc","ac","pc"}) do
@@ -240,10 +246,10 @@ local function _reset() -- allow me to fix outdated state during dev
 		end
 	end
 	
-	init(false)
+	init()
 end
 script.on_init(function(event)
-	init(true)
+	init()
 end)
 
 -- First attempt at adding migrations
@@ -327,7 +333,7 @@ local function debug_vis_wires(surface, time_to_live, origin)
 		end
 	end
 	
-	_vis(surface.find_entities_filtered{ name="radar" })
+	_vis(surface.find_entities_filtered{ type="radar", name="radar" })
 	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-cc" })
 	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-dc" })
 end

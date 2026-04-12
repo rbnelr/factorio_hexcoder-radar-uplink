@@ -2,7 +2,6 @@ mod_name = "hexcoder_radar_uplink-"
 local dbg = settings.startup["hexcoder_radar_uplink-debug"].value
 
 local radar = data.raw["radar"]["radar"]
---table.insert(radar.flags, "get-by-unit-number")
 -- override default auto-connect logic
 -- would have updated wire_origin.radar connection manually, but can't change it from lua
 -- so replicate this behavior manually via wire_origin.script
@@ -14,26 +13,35 @@ local function make_phantom(thing)
 		"not-rotatable", "not-flammable", "not-repairable",
 		"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
 		"not-in-kill-statistics", "not-in-made-in",
-		"not-selectable-in-game"
+		--"not-selectable-in-game",
+		"no-automated-item-removal", "no-automated-item-insertion"
 	}
+	
 	thing.hidden = true
 	thing.minable = {minable=false, mining_time=999999}
 	thing.corpse = nil
 	thing.dying_explosion = nil
 	thing.collision_box = nil
+	thing.collision_mask = { layers = {} }
 	thing.damaged_trigger_effect = nil
 	thing.fast_replaceable_group = nil
 	thing.open_sound = nil
 	thing.close_sound = nil
 	thing.impact_category = nil
 	
-	if not dbg then
+	if dbg then
+		--sets the variable, but does not actually render higher, likely hardcoded for combinators etc.
+		--thing.integration_patch_render_layer = "elevated-object" -- would be nice to render this on top of cargo hatches of hub
+		thing.selection_priority = 100 -- selectable on top of platform hub for debugging
+	else
 		table.insert(thing.flags, "hide-alt-info")
 		
 		thing.picture = nil
 		thing.sprites = nil
 		
 		thing.selection_box = {{0,0}, {0,0}}
+		thing.selectable_in_game = false
+		
 		thing.draw_circuit_wires = false
 		
 		-- CC

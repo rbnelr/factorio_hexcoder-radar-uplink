@@ -33,7 +33,7 @@ function M.set_tags(ghost, settings)
 end
 ---@param ghost LuaEntity|BlueprintEntity
 ---@param entity_id unit_number
----@return boolean
+---@returns boolean
 function M.settings_to_tags(ghost, entity_id)
 	local data = storage.radars[entity_id]
 	if data then
@@ -154,8 +154,8 @@ function M.update_platform_requests_at_planet(data)
 		table.insert(signals, { value={ type="virtual", name="signal-info", quality="normal" }, min=1 })
 		
 		-- Platform hub logistic points, for hubs we seem to always have 2: { requester, passive_provider }
-		local logi = plat.hub.get_logistic_point()[1]
-		if logi.filters then
+		local logi = plat.hub.get_logistic_point(defines.logistic_member_index.cargo_landing_pad_requester)
+		if logi and logi.filters then
 			--game.print(">> filters: ")
 			-- filters are already compiled (all requests for one item summed) and filtered by import_from planet (unlike raw sections)
 			-- while in transit no filter is applied
@@ -184,7 +184,7 @@ function update_platform_pod_deliveries(plat)
 	if not data then return end
 	
 	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
-	local logi = plat.hub.get_logistic_point()[1] -- access directly to avoid iteration
+	local logi = plat.hub.get_logistic_point(defines.logistic_member_index.cargo_landing_pad_requester)
 	
 	local signals = {}
 	for _, item in ipairs(logi.targeted_items_deliver) do
@@ -198,6 +198,18 @@ function update_platform_pod_deliveries(plat)
 	
 	local ctrl = data.readers.otw_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[1].filters = signals -- could avoid
+end
+---@param data PlatformData
+function update_platform_inv_slots(data)
+	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
+	local inv = data.platform.hub.get_inventory(defines.inventory.hub_main)
+	local slots = inv and #inv or 0
+	
+	local ctrl = data.readers.inv_slots_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	ctrl.sections[1].set_slot(1, {
+		value = { type="virtual", name="signal-S", quality="normal" },
+		min = slots
+	})
 end
 
 script.on_event(defines.events.on_space_platform_changed_state, function (event)
@@ -263,6 +275,9 @@ script.on_event(defines.events.on_cargo_pod_delivered_cargo, function (event)
 	end
 end)
 
+-- TODO: it's possible to delete cargo pods from scripts, which makes this logic end up wrong
+-- could at least try to react to cargo pod destroy etc.
+
 ---@param data PlatformData
 function M.poll_platform(data)
 	if data.platform.space_location then
@@ -270,18 +285,20 @@ function M.poll_platform(data)
 	else
 		M.update_platform_status(data)
 	end
+	-- update via polling for now, could probabably also react to hub and cargo bay build and destroy events?
+	update_platform_inv_slots(data)
 end
 
 -- there seems to be no event for scheduled_for_deletion, so lets just stay connected until it is deleted
 ---@param p LuaSpacePlatform
----@return boolean
+---@returns boolean
 function M.platform_valid(p)
 	-- platforms being built don't have a hub yet
 	return (p and p.valid and p.hub and p.hub.valid) or false
 end
 
 ---@param platform LuaSpacePlatform
----@return PlatformData
+---@returns PlatformData
 function M.init_platform(platform)
 	local data = storage.platforms[platform.index]
 	if not data then
@@ -347,13 +364,15 @@ function M.init_platform(platform)
 		readers.otw_cc  = combinator("hexcoder_radar_uplink-cc", 2,0, "platform targeted_items_deliver ('on the way' via rocket silo cargo pod)")
 		-- proxy container that automatically reads platform hub iventory without user needing to use "read contents" option
 		readers.inv_pc  = proxy_container("hexcoder_radar_uplink-pc", 3,0)
+		readers.inv_slots_cc  = combinator("hexcoder_radar_uplink-cc", 4,0, "platform inventory slots")
 		
 		readers.stat    = combinator("hexcoder_radar_uplink-ac", 0,1.5, "platform status, delay=1", arith_identity, readers.loc_cc, {readers.stat_cc})
 		readers.req_raw = combinator("hexcoder_radar_uplink-ac", 1,1.5, "platform requests at current planet, delay=1", arith_identity, readers.req_cc)
 		readers.otw_raw = combinator("hexcoder_radar_uplink-ac", 2,1.5, "platform deliveries on the way, delay=1", arith_identity, readers.otw_cc)
 		readers.inv_raw = combinator("hexcoder_radar_uplink-ac", 3,1.5, "platform hub inventory negated, delay=1", arith_identity, readers.inv_pc)
+		readers.inv_slots_raw = combinator("hexcoder_radar_uplink-ac", 4,1.5, "platform hub inventory slots, delay=1", arith_identity, readers.inv_slots_cc)
 		
-		readers.req = combinator("hexcoder_radar_uplink-ac", 4,1, "unfulfilled platform requests", arith_RminusG, readers.req_cc, { readers.otw_cc, readers.inv_pc })
+		readers.req = combinator("hexcoder_radar_uplink-ac", 4,-2, "unfulfilled platform requests", arith_RminusG, readers.req_cc, { readers.otw_cc, readers.inv_pc })
 		
 		data = {
 			platform=platform,
@@ -404,6 +423,11 @@ local function remove_from_poll_list(data)
 	storage.polling_radars[last] = nil
 end
 
+---@param entity LuaEntity
+function M.is_radar(entity)
+	return entity.name == "radar" or (entity.type == "entity-ghost" and entity.ghost_name == "radar")
+end
+
 M.radar_defaults = {
 	pl_std = {
 		Sta = { true, true }, -- R, G
@@ -414,6 +438,7 @@ M.radar_defaults = {
 		Req = { false, true },
 		Otw = { true, false },
 		Inv = { true, false },
+		InvSlots = { false, false },
 	}
 }
 
@@ -522,9 +547,10 @@ local function refresh_radar_platform_mode(id, entity, data)
 	if not dcs then
 		dcs = {}
 		dcs.Sta = make_combinator(0,1, "platform status")
-		dcs.Req = make_combinator(1,1, "platform req")
-		dcs.Otw = make_combinator(2,1, "platform otw")
-		dcs.Inv = make_combinator(3,1, "platform inv")
+		dcs.Req = make_combinator(.75,1, "platform req")
+		dcs.Otw = make_combinator(1.5,1, "platform otw")
+		dcs.Inv = make_combinator(2.25,1, "platform inv")
+		dcs.InvSlots = make_combinator(3,1, "platform slots")
 		dcs.Check = make_combinator(3,-1, "platform location check")
 	end
 	
@@ -550,6 +576,7 @@ local function refresh_radar_platform_mode(id, entity, data)
 	config_combinator(dcs.Req, params_detail, data.S.read.Req)
 	config_combinator(dcs.Otw, params_detail, data.S.read.Otw)
 	config_combinator(dcs.Inv, params_detail, data.S.read.Inv)
+	config_combinator(dcs.InvSlots, params_detail, data.S.read.InvSlots)
 	config_combinator(dcs.Check, params_check)
 	
 	-- connect DCs to platform if platform initialized
@@ -557,8 +584,9 @@ local function refresh_radar_platform_mode(id, entity, data)
 	local dcReq = dcs.Req.get_wire_connectors(false)
 	local dcOtw = dcs.Otw.get_wire_connectors(false)
 	local dcInv = dcs.Inv.get_wire_connectors(false)
+	local dcInvSlots = dcs.InvSlots.get_wire_connectors(false)
 	local dcCheck = dcs.Check.get_wire_connectors(false)
-	local connected = false
+	--local connected = false
 	
 	data.dcs = dcs
 	
@@ -589,6 +617,7 @@ local function refresh_radar_platform_mode(id, entity, data)
 			local plReq = plat_data.readers.req_raw.get_wire_connectors(true)
 			local plOtw = plat_data.readers.otw_raw.get_wire_connectors(true)
 			local plInv = plat_data.readers.inv_raw.get_wire_connectors(true)
+			local plInvSlots = plat_data.readers.inv_slots_raw.get_wire_connectors(true)
 			
 			dcReq[W.combinator_input_red].connect_to(plReq[W.combinator_output_red], false, HIDDEN)
 			dcReq[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
@@ -596,9 +625,11 @@ local function refresh_radar_platform_mode(id, entity, data)
 			dcOtw[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
 			dcInv[W.combinator_input_red].connect_to(plInv[W.combinator_output_red], false, HIDDEN)
 			dcInv[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
+			dcInvSlots[W.combinator_input_red].connect_to(plInvSlots[W.combinator_output_red], false, HIDDEN)
+			dcInvSlots[W.combinator_input_green].connect_to(dcCheckG, false, HIDDEN)
 		end
 		
-		connected = true
+		--connected = true
 	end
 end
 
@@ -627,7 +658,7 @@ function M.refresh_radar(data)
 end
 ---@param entity LuaEntity
 ---@param copy_settings RadarSettings?
----@return RadarData
+---@returns RadarData
 function M.init_radar(entity, copy_settings)
 	local id = entity.unit_number
 	local data = storage.radars[id]
@@ -635,15 +666,18 @@ function M.init_radar(entity, copy_settings)
 		local S
 		if copy_settings then
 			S = util.table.deepcopy(copy_settings)
-		elseif entity.tags then -- handle allowing gui from ghost entities
-			S = entity.tags["hexcoder_radar_uplink"]
 		else
-			-- default settings if radar not registered in storage
-			-- Vanilla-equivalent global comms mode
-			S = { -- settings
-				mode = "comms",
-				selected_channel = 1, -- "[Global]"
-			}
+			local tags = entity.tags and entity.tags["hexcoder_radar_uplink"]
+			if tags then -- handle allowing gui from ghost entities
+				S = tags
+			else
+				-- default settings if radar not registered in storage
+				-- Vanilla-equivalent global comms mode
+				S = { -- settings
+					mode = "comms",
+					selected_channel = 1, -- "[Global]"
+				}
+			end
 		end ---@cast S RadarSettings
 		
 		data = {
@@ -666,7 +700,7 @@ end
 
 ---@param data RadarData
 function M.poll_radar(data)
-	assert(data.entity and data.entity.valid and data.entity.type == "radar")
+	--assert(M.is_radar(data.entity))
 	
 	local new_status = data.entity.status ---@cast new_status -nil
 	if new_status ~= data.status then

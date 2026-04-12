@@ -1,12 +1,13 @@
 {
 	"name": "hexcoder-radar-uplink",
-	"version": "0.1.3",
+	"version": "0.1.4",
 	"title": "Radar Uplink",
 	"author": "Hexcoder",
+	"contact": "rbnelr@gmail.com",
 	"factorio_version": "2.0",
 	"dependencies": [
 		"base >= 2.0.61",
 		"space-age >= 2.0.61"
 	],
-	"description": "Flexible radar circuit interface\nRead space platforms status and requests to better control your rocket silos.\nSend signals across surface via named channels, or enable interplanetary connection.\nSuggestions welcome."
+	"description": "Useful radar circuit options.\nRead individual space platform status and unfulfilled requests to better control your rocket silos.\nSend signals across surfaces via named channels, with optional interplanetary transmission.\nVery low performance cost."
 }

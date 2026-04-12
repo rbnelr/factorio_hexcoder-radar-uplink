@@ -12,6 +12,7 @@ data:extend({
 		type = "sound",
 		name = mod_name.."open-sound",
 		filename = "__base__/sound/open-close/beacon-open.ogg" ,
+		category = "gui-effect",
 		volume = 0.25,
 		speed = 1.06
 	},
@@ -19,6 +20,7 @@ data:extend({
 		type = "sound",
 		name = mod_name.."close-sound",
 		filename = "__base__/sound/open-close/beacon-close.ogg",
+		category = "gui-effect",
 		volume = 0.25,
 		speed = 1.04
 	}

@@ -16,7 +16,7 @@ local GuiDef = {}
 GuiDef.__index = GuiDef
 
 ---@param children GuiDef[]
----@return GuiDef
+---@returns GuiDef
 function GuiDef:add(children)
 	local list = self.children or {}
 	for _, c in ipairs(children) do
@@ -30,7 +30,7 @@ local _gui_non_args = {children=true, drag_target=true}
 
 ---@param parent LuaGuiElement
 ---@param name? string
----@return LuaGuiElement, GuiRefs
+---@returns LuaGuiElement, GuiRefs
 function GuiDef:add_to(parent, name, refs)
 	refs = refs or {}
 	
@@ -86,7 +86,7 @@ function GuiDef:add_to(parent, name, refs)
 end
 
 ---@param args GuiDef
----@return GuiDef
+---@returns GuiDef
 function GUI(args)
 	return setmetatable(args, GuiDef)
 end
@@ -94,7 +94,7 @@ end
 ---@param name string
 ---@param caption LocalisedString
 ---@param content GuiDef[]
----@return GuiDef
+---@returns GuiDef
 function gui_default_frame(name, caption, content)
 	-- TODO: cursor is not finger pointer on draggable titlebar like with built in guis?
 	return GUI{type="frame", name=name, direction="vertical"}:add{
@@ -120,10 +120,32 @@ function gui_vflow(args)
 	return GUI{type="flow", name=args.name, direction="vertical", style=args.style}
 end
 
+function radiobutton_changed(element_name, refs, modes)
+	local mode = modes[element_name] -- clicked radio button -> set mode
+	if mode then
+		for k,m in pairs(modes) do
+			refs[k].state = mode == m -- update all radio button states
+		end
+		return mode
+	else
+		for k,m in pairs(modes) do
+			if refs[k].state then
+				return m
+			end
+		end
+		--return nil
+		-- default to first
+		for k,m in pairs(modes) do
+			refs[k].state = true
+			return m
+		end
+	end
+end
+
 local M = {}
 
 -----@param str string
------@return string[]
+-----@returns string[]
 --function M.version_split(str)
 --	local parts = {}
 --	for s in string.gmatch(str, "([^.]+)") do
@@ -134,7 +156,7 @@ local M = {}
 
 ---@param l string
 ---@param r string
----@return boolean
+---@returns boolean
 function M.version_less(l, r)
 	local l_parts = util.split(l, ".")
 	local r_parts = util.split(r, ".")
