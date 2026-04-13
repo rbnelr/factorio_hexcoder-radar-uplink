@@ -39,12 +39,12 @@ local function radar_gui_update_channels(gui, data)
 	
 	local ch = storage.channels.map[data.S.selected_channel]
 	gui.refs.ch_name.text = ch and ch.name or ""
-	gui.refs.ch_interplanetary.state = ch and ch.is_interplanetary and storage.settings.allow_interpl or false
+	gui.refs.ch_interplanetary.state = ch and ch.is_interplanetary and settings.allow_interpl or false
 	
 	local can_edit = ch ~= nil and ch.id > 1 -- can't edit [Global] channel!
 	gui.refs.ch_name.enabled = can_edit
 	gui.refs.ch_delete.enabled = can_edit
-	gui.refs.ch_interplanetary.enabled = can_edit and storage.settings.allow_interpl
+	gui.refs.ch_interplanetary.enabled = can_edit and settings.allow_interpl
 end
 
 -- Only update platform list any time radar gui is opened, as updating it in tick seems to mess with drop down (having to spam click for it to close)

@@ -27,7 +27,7 @@ local function update_channel_surface_links(id)
 	local channel = storage.channels.map[id]
 	if not channel then return end
 	
-	channel.is_interplanetary = channel.is_interplanetary and storage.settings.allow_interpl --[[@as boolean]]
+	channel.is_interplanetary = channel.is_interplanetary and settings.allow_interpl --[[@as boolean]]
 	
 	local prevR = nil
 	local prevG = nil
@@ -194,15 +194,14 @@ function M.update_radar_channel(data)
 	channel_switch(data.entity, channel_id, data.entity.surface)
 end
 
----@param surf_id surface_index
-function M.on_surface_event(surf_id)
-	local surf = storage.channels.surfaces[surf_id]
+function M.on_surface_event(event)
+	local surf = storage.channels.surfaces[event.surface_index]
 	if surf then
 		-- delete surface data
 		for id, _ in pairs(surf.channels) do
 			destroy_hubs(surf, id)
 		end
-		storage.channels.surfaces[surf_id] = nil
+		storage.channels.surfaces[event.surface_index] = nil
 	end
 end
 

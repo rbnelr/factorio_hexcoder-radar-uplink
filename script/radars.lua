@@ -479,7 +479,7 @@ local function refresh_radar_platform_mode(id, entity, data)
 	local radar_surf = entity.surface
 	local radar_planet = radar_surf.planet -- nil if radar placed on space platform
 	
-	local allow_unchecked = storage.settings.allow_interpl and data.S.read_mode == "raw"
+	local allow_unchecked = settings.allow_interpl and data.S.read_mode == "raw"
 	
 	-- Status DC just passes along info (1-tick delay one-way signal bridge)
 	local params_sta = {conditions={

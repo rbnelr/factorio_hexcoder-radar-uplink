@@ -1,8 +1,4 @@
 --[[
-TODO: make sure open/close sounds actually count as gui sounds, so gui sound volume slider actually affects it
- -> probably should actually assign it as radar.open_sound in data-updates, even if still have to play it manually
-
-TODO: rewrite gui to be less bad at next opportunity
 TODO: switch channels over to being keyed on string again, this is safer to blueprint etc. (should switch platform as well!) (rename from gui should just update others or update on after asking)
  -> only show local channels and global ones exposed via interplanetary flag in gui
   -> make channels get lazily created by name per surface (from gui), -> set up hubs and already connect according to rules (which surfaces can connect to? search all of them for channels of same name)
@@ -71,7 +67,7 @@ script.on_event(defines.events.on_tick, function(event)
 	--if not storage.polling_radars_cur then return end
 	
 	-- update entire list and thus each entity exactly once every period
-	local period = storage.settings.poll_period
+	local period = settings.poll_period
 	local list = storage.polling_radars
 	local ratio = (event.tick % period) + 1 -- +1 only works with tick freq=1, period must be divisible by this, so 1 is good
 	local last = math.ceil((ratio / period) * #list)
@@ -99,7 +95,7 @@ local function on_created_entity(event)
 	radars.init_radar(entity, copy_settings)
 end
 
-for _, event in ipairs({
+for _, event in pairs({
 	defines.events.on_built_entity,
 	defines.events.on_robot_built_entity,
 	defines.events.on_space_platform_built_entity,
@@ -109,8 +105,7 @@ for _, event in ipairs({
 }) do
 	script.on_event(event, on_created_entity, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
 end
-
--- TODO: handle script_raised_teleported ? Liekly super rare but easy to handle (tempS=data.S, delete_radar + init_radar(, tempS))
+-- TODO: handle script_raised_teleported ? Likely super rare but easy to handle (tempS=data.S, delete_radar + init_radar(, tempS))
 
 -- for all radars: if dies apply tags to ghost to keep settings on revive
 script.on_event(defines.events.on_post_entity_died, function(event)
@@ -167,27 +162,29 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
 	end
 end)
 
-for _, event in ipairs({
+script.on_event({
 	defines.events.on_surface_cleared,
 	defines.events.on_surface_created,
 	defines.events.on_surface_deleted,
 	defines.events.on_surface_imported,
-}) do script.on_event(event, function(event)
-	--game.print(">> on_surface_event: ".. serpent.block(event))
-	radar_channels.on_surface_event(event.surface_index)
-end) end
+}, radar_channels.on_surface_event)
 
 ---- init
 
+settings = {
+	allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]],
+	poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value --[[@as integer]],
+}
+
 script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
 	if event.setting == "hexcoder_radar_uplink-allow_interplanetary_comms" then
-		storage.settings.allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
+		settings.allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
 		
 		radars.refresh_all_custom_radars()
 		radar_channels.update_all_channels_is_interplanetary()
 	end
 	
-	storage.settings.poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
+	settings.poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
 end)
 
 ---@class player_index : integer
@@ -197,7 +194,6 @@ end)
 ---@class channel_id : number
 
 ---@class ModStorage
----@field settings ModSettings
 ---@field open_guis table<player_index, OpenGui>
 ---@field radars table<unit_number, RadarData>
 ---@field platforms table<platform_index, PlatformData>
@@ -206,16 +202,8 @@ end)
 ---@field polling_radars RadarData[]
 ---@field polling_radars_cur integer
 
----@class ModSettings
----@field allow_interpl boolean
----@field poll_period integer
-
 function migrations.init()
 	storage = {}
-	storage.settings = {
-		allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]],
-		poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value --[[@as integer]],
-	}
 	storage.open_guis = {}
 	storage.radars = {}
 	storage.platforms = {} 

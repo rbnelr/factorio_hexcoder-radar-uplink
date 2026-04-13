@@ -141,33 +141,3 @@ function radiobutton_changed(element_name, refs, modes)
 		end
 	end
 end
-
-local M = {}
-
------@param str string
------@returns string[]
---function M.version_split(str)
---	local parts = {}
---	for s in string.gmatch(str, "([^.]+)") do
---		table.insert(parts, s)
---	end
---	return parts
---end
-
----@param l string
----@param r string
----@returns boolean
-function M.version_less(l, r)
-	local l_parts = util.split(l, ".")
-	local r_parts = util.split(r, ".")
-	for i=1, #l_parts do
-		if tonumber(l_parts[i]) < tonumber(r_parts[i]) then
-			return true
-		elseif l_parts[i] ~= r_parts[i] then
-			return false
-		end
-	end
-	return false
-end
-
-return M

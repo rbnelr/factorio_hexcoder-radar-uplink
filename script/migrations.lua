@@ -1,8 +1,8 @@
-
-local myutil = require("script.myutil")
 local radars = require("script.radars")
 
 local M = {}
+
+-- Don't migrate existing radars with settings to adopt new default settings, as this might affect existing circuits
 
 -- First attempt at adding migrations
 function M.migrate_less0_1_4()
@@ -32,8 +32,8 @@ function M.migrate_less0_1_4()
 			if old_data.S.mode == "platforms" then
 				data.S.read_mode = old_data.S.read_mode == "raw" and "raw" or "std"
 				data.S.read = data.S.read or {}
-				for k,def in pairs(radars.radar_defaults["pl_"..data.S.read_mode]) do
-					data.S.read[k] = old_data.S.read and old_data.S.read[k] or def
+				for k,_ in pairs(radars.radar_defaults["pl_"..data.S.read_mode]) do
+					data.S.read[k] = old_data.S.read and old_data.S.read[k] or { false, false } -- copy setting or false to avoid affecting existing circuits
 				end
 				data.S.selected_platform = nil
 				if new_platforms[data.entity.force.index][old_data.S.selected_platform] then
@@ -65,7 +65,7 @@ script.on_configuration_changed(function(data)
 		return
 	end
 	
-	if myutil.version_less(old, "0.1.4") then
+	if helpers.compare_versions(old, "0.1.4") < 0 then
 		M.migrate_less0_1_4()
 	end
 end)
