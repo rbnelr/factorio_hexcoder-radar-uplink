@@ -2,14 +2,19 @@ local radars = require("script.radars")
 
 local M = {}
 
--- Don't migrate existing radars with settings to adopt new default settings, as this might affect existing circuits
+--[[ Migration Notes:
+
+	-Be careful about default settings, user-customized radars should use existing settings, not defaults
+	
+]]
 
 -- First attempt at adding migrations
 function M.migrate_less0_1_4()
 	local channels = util.table.deepcopy(storage.channels or {}) -- deepcopy just to be safe
 	local old_radars = util.table.deepcopy(storage.radars or {})
 	
-	M._reset()
+	M.reset()
+	M.init()
 	
 	local new_platforms = {}
 	for _,force in pairs(game.forces) do
@@ -51,8 +56,8 @@ function M.migrate_less0_1_4()
 	end
 end
 
-commands.add_command("hexcoder_radar_uplink-reset", nil, function(command)
-	M._reset()
+commands.add_command("hexcoder_radar_uplink-migrate", nil, function(command)
+	M.migrate_less0_1_4()
 end)
 
 script.on_configuration_changed(function(data)

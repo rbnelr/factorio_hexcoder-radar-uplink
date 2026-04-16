@@ -15,6 +15,8 @@
 ---@field hub LuaEntity
 ---@field link_hub LuaEntity
 
+local W = defines.wire_connector_id
+local HIDDEN = defines.wire_origin.script
 
 local M = {}
 
@@ -115,6 +117,7 @@ local function init_channel(surface, id)
 	-- lazily create surface data
 	local surf = storage.channels.surfaces[surface.index]
 	if not surf then
+		script.register_on_object_destroyed(surface)
 		surf = { channels={} }
 		storage.channels.surfaces[surface.index] = surf
 	end

@@ -10,8 +10,6 @@
 
 ---@alias GuiRefs table<string, LuaGuiElement>
 
-local util = require("util")
-
 local GuiDef = {}
 GuiDef.__index = GuiDef
 
@@ -120,13 +118,16 @@ function gui_vflow(args)
 	return GUI{type="flow", name=args.name, direction="vertical", style=args.style}
 end
 
-function radiobutton_changed(element_name, refs, modes)
-	local mode = modes[element_name] -- clicked radio button -> set mode
-	if mode then
+---@param refs GuiRefs
+---@param modes table<string, string>
+---@param clicked_element_name? string
+function update_radiobutton(refs, modes, clicked_element_name)
+	local clicked_mode = modes[clicked_element_name] -- clicked radio button -> set mode
+	if clicked_mode then
 		for k,m in pairs(modes) do
-			refs[k].state = mode == m -- update all radio button states
+			refs[k].state = clicked_mode == m -- update all radio button states
 		end
-		return mode
+		return clicked_mode
 	else
 		for k,m in pairs(modes) do
 			if refs[k].state then

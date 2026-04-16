@@ -30,17 +30,6 @@ TODO: copy paste? not really possible to to properly (with visual feedback?); bu
 ---@type ModStorage
 storage = storage
 
-dbg = settings.startup["hexcoder_radar_uplink-debug"].value
-
-function round(num)
-	return num >= 0 and math.floor(num + 0.5) or math.ceil(num - 0.5)
-end
-netR = {red=true, green=false}
-netG = {red=false, green=true}
-W = defines.wire_connector_id
---HIDDEN = dbg and defines.wire_origin.player or defines.wire_origin.script
-HIDDEN = defines.wire_origin.script
-
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
 local radar_gui = require("script.radar_gui")
@@ -169,6 +158,34 @@ script.on_event({
 	defines.events.on_surface_imported,
 }, radar_channels.on_surface_event)
 
+local deathrattles = {} ---@type function(EventData.on_object_destroyed)[]
+deathrattles[defines.target_type.entity] = function(event)
+	if storage.open_guis then
+		for player_i, gui in pairs(storage.open_guis) do
+			-- close open entity gui if entity destroyed
+			if event.useful_id == (gui and gui.data and gui.data.id) then
+				game.get_player(player_i).opened = nil
+			end
+		end
+	end
+	
+	radars.delete_radar(event.useful_id)
+end
+deathrattles[defines.target_type.space_platform] = function(event)
+	radars.delete_platform(event.useful_id)
+end
+deathrattles[defines.target_type.surface] = function(event)
+	radar_channels.on_surface_event(event.useful_id)
+end
+deathrattles[defines.target_type.player] = function(event)
+	radar_gui.force_close_gui(event.useful_id)
+end
+script.on_event(defines.events.on_object_destroyed, function(event)
+	--game.print("on_object_destroyed: ".. serpent.line(event))
+	local handler = deathrattles[event.type]
+	if handler then handler(event) end
+end)
+
 ---- init
 
 settings = {
@@ -203,7 +220,6 @@ end)
 ---@field polling_radars_cur integer
 
 function migrations.init()
-	storage = {}
 	storage.open_guis = {}
 	storage.radars = {}
 	storage.platforms = {} 
@@ -222,7 +238,7 @@ function migrations.init()
 		end
 	end
 end
-function migrations._reset() -- allow me to fix outdated state during dev
+function migrations.reset()
 	for _, player in pairs(game.players) do player.opened = nil end
 	
 	for _, s in pairs(game.surfaces) do
@@ -233,7 +249,7 @@ function migrations._reset() -- allow me to fix outdated state during dev
 		end
 	end
 	
-	migrations.init()
+	storage = {}
 end
 
 ---- debugging
