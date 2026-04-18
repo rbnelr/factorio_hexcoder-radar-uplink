@@ -10,11 +10,15 @@
 
 ---@alias GuiRefs table<string, LuaGuiElement>
 
+-- Using globals here because it is annoying to import everything, probably should not be doing that?
+
+local M = {}
+
 local GuiDef = {}
 GuiDef.__index = GuiDef
 
 ---@param children GuiDef[]
----@returns GuiDef
+---@return GuiDef def
 function GuiDef:add(children)
 	local list = self.children or {}
 	for _, c in ipairs(children) do
@@ -28,7 +32,7 @@ local _gui_non_args = {children=true, drag_target=true}
 
 ---@param parent LuaGuiElement
 ---@param name? string
----@returns LuaGuiElement, GuiRefs
+---@return LuaGuiElement elem, GuiRefs named_refs
 function GuiDef:add_to(parent, name, refs)
 	refs = refs or {}
 	
@@ -84,7 +88,7 @@ function GuiDef:add_to(parent, name, refs)
 end
 
 ---@param args GuiDef
----@returns GuiDef
+---@return GuiDef
 function GUI(args)
 	return setmetatable(args, GuiDef)
 end
@@ -92,7 +96,7 @@ end
 ---@param name string
 ---@param caption LocalisedString
 ---@param content GuiDef[]
----@returns GuiDef
+---@return GuiDef
 function gui_default_frame(name, caption, content)
 	-- TODO: cursor is not finger pointer on draggable titlebar like with built in guis?
 	return GUI{type="frame", name=name, direction="vertical"}:add{
@@ -118,11 +122,14 @@ function gui_vflow(args)
 	return GUI{type="flow", name=args.name, direction="vertical", style=args.style}
 end
 
+-- update radiobutton state on click 
+---@generic Mode : string
 ---@param refs GuiRefs
----@param modes table<string, string>
----@param clicked_element_name? string
-function update_radiobutton(refs, modes, clicked_element_name)
-	local clicked_mode = modes[clicked_element_name] -- clicked radio button -> set mode
+---@param modes table<string, Mode> gui element name to mode name
+---@param clicked_element? string gui element name that was clicked (can be related) or nil
+---@return Mode selected the mode that still is or was just selected, defaults to the first 
+function update_radiobutton(refs, modes, clicked_element)
+	local clicked_mode = modes[clicked_element] -- clicked radio button -> set mode
 	if clicked_mode then
 		for k,m in pairs(modes) do
 			refs[k].state = clicked_mode == m -- update all radio button states
@@ -142,3 +149,96 @@ function update_radiobutton(refs, modes, clicked_element_name)
 		end
 	end
 end
+
+---@alias Item table|userdata
+
+---@class ArrayList
+---@field [integer] Item -- T[] (continuous array)
+---@field [Item] integer -- table<T, integer> (index lookup)
+local ArrayList = {}
+ArrayList.__index = ArrayList
+
+---@return ArrayList
+function ArrayList.new()
+	return setmetatable({}, ArrayList)
+end
+
+---@generic T : table
+---@param self ArrayList
+---@param item Item
+function ArrayList:add(item)
+	assert(self[item] == nil)
+	local idx = #self + 1
+	self[idx] = item ; self[item] = idx
+end
+---@generic T : table
+---@param self ArrayList
+---@param item Item
+---@return boolean was_added
+function ArrayList:try_add(item)
+	if self[item] ~= nil then return false end
+	local idx = #self + 1
+	self[idx] = item ; self[item] = idx
+	return true
+end
+
+---@generic T : table
+---@param self ArrayList
+---@param item Item
+function ArrayList:remove(item)
+	-- delete by swap with last
+	local last_idx = #self
+	local idx  = self[item]     ; self[item] = nil
+	local last = self[last_idx] ; self[last_idx] = nil
+	self[idx] = last ; self[last] = idx
+end
+---@generic T : table
+---@param self ArrayList
+---@param item Item
+---@return boolean was_removed
+function ArrayList:try_remove(item)
+	if not self[item] then return false end
+	-- delete by swap with last
+	local last_idx = #self
+	local idx  = self[item]     ; self[item] = nil
+	local last = self[last_idx] ; self[last_idx] = nil
+	self[idx] = last ; self[last] = idx
+	return true
+end
+
+local ceil = math.ceil
+
+---@generic T : Item
+---@class TickList<T> : ArrayList
+---@field cur integer
+local TickList = {}
+TickList.__index = TickList
+TickList.add = ArrayList.add
+TickList.remove = ArrayList.remove
+
+---@return TickList
+function TickList.new()
+	return setmetatable({ cur=1 }, TickList)
+end
+
+---@param self TickList
+---@param game_tick integer
+---@param period integer
+---@param func fun(item)
+function TickList:stagger_tick(game_tick, period, func)
+	-- update each entity exactly once every period
+	-- should be safe to remove items or change period without updating poll_cur, but could cause skipping of items for one period
+	local ratio = (game_tick % period) + 1 -- +1 only works with tick freq=1, period must be divisible by this, so 1 is good
+	local last = ceil((ratio / period) * #self)
+	
+	for i=self.cur,last do
+		func(self[i])
+	end
+	
+	if ratio == period then self.cur = 1-- end of list reached
+	else                    self.cur = last+1 end
+end
+
+M.ArrayList = ArrayList
+M.TickList = TickList
+return M

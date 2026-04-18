@@ -29,7 +29,7 @@ local function update_channel_surface_links(id)
 	local channel = storage.channels.map[id]
 	if not channel then return end
 	
-	channel.is_interplanetary = channel.is_interplanetary and settings.allow_interpl --[[@as boolean]]
+	channel.is_interplanetary = channel.is_interplanetary and ALLOW_INTERPL --[[@as boolean]]
 	
 	local prevR = nil
 	local prevG = nil
@@ -69,7 +69,7 @@ function M.update_all_channels_is_interplanetary()
 	end
 end
 
----@returns Channel
+---@return Channel
 function M.create_new_channel()
 	local chs = storage.channels
 	local ch = { id=chs.next_id, name="New channel", is_interplanetary=false }
@@ -109,7 +109,7 @@ end
 -- init channel for surface, if the same channel get connected to from other surface, their link_hub will be connected
 ---@param surface LuaSurface
 ---@param id channel_id
----@returns ChannelHubs?
+---@return ChannelHubs?
 local function init_channel(surface, id)
 	local channel = storage.channels.map[id]
 	if not channel then return nil end -- blueprinting not correct for channels
@@ -189,14 +189,16 @@ function M.update_radar_channel(data)
 	--game.print(">> update_radar_channel: ".. serpent.block(data))
 	
 	local channel_id = 0 -- [None] channel
-	if data.S.mode == "comms" and data.S.selected_channel and data.status == defines.entity_status.working then
-		channel_id = data.S.selected_channel
+	if data.S.mode == "comms" and data.S.selected and data.status == defines.entity_status.working then
+		channel_id = data.S.selected
 	end
 	---@cast channel_id channel_id
 	
 	channel_switch(data.entity, channel_id, data.entity.surface)
 end
 
+-- TODO: Get rid of surface events? just let radars and channel hubs get destroyed and react to that if needed?
+--> actually on_object_destroyed is not reliable, so do react, but only update wire connections?
 function M.on_surface_event(event)
 	local surf = storage.channels.surfaces[event.surface_index]
 	if surf then

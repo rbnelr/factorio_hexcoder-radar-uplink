@@ -14,7 +14,6 @@ function M.migrate_less0_1_4()
 	local old_radars = util.table.deepcopy(storage.radars or {})
 	
 	M.reset()
-	M.init()
 	
 	local new_platforms = {}
 	for _,force in pairs(game.forces) do

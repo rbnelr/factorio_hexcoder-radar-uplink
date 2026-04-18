@@ -30,11 +30,16 @@ TODO: copy paste? not really possible to to properly (with visual feedback?); bu
 ---@type ModStorage
 storage = storage
 
+DEBUG = true
+
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
+local Platforms = require("script.platforms")
 local radar_gui = require("script.radar_gui")
 local migrations = require("script.migrations")
+local myutil = require("script.myutil")
 
+-- Keep in nth tick or also stagger_tick? maybe infrequently updating distance readings are cleaner if synched?
 script.on_nth_tick(12, function(event)
 	-- poll when gui is open to react to player walking out of reach of radar
 	for player_id, gui in pairs(storage.open_guis) do
@@ -47,29 +52,24 @@ script.on_nth_tick(12, function(event)
 	-- poll platforms that are currently moving to display real time status
 	--for _,data in pairs(storage.polling_platforms) do
 	-- Do this for all platform right now, to fix requests not reacting to user toggling sections
-	for _,data in pairs(storage.platforms) do
-		radars.poll_platform(data)
+	local platforms = storage.platforms
+	for _,data in ipairs(storage.platforms) do
+		platforms:poll_platform(data)
 	end
 end)
 
 script.on_event(defines.events.on_tick, function(event)
-	--if not storage.polling_radars_cur then return end
-	
-	-- update entire list and thus each entity exactly once every period
-	local period = settings.poll_period
-	local list = storage.polling_radars
-	local ratio = (event.tick % period) + 1 -- +1 only works with tick freq=1, period must be divisible by this, so 1 is good
-	local last = math.ceil((ratio / period) * #list)
-	
-	for i=storage.polling_radars_cur,last do
-		radars.poll_radar(list[i])
+	if DEBUG then
+		if not _did_reset then
+			migrations.reset()
+			_did_reset = true
+		end
 	end
+	--storage.poll_power_check:tick(POLL_PERIOD, event.tick, radars.poll_radar)
 	
-	if ratio == period then -- end of list reached
-		storage.polling_radars_cur = 1
-	else
-		storage.polling_radars_cur = last+1
-	end
+	--storage.poll_power_check:tick(POLL_PERIOD, event.tick, radars.poll_radar)
+	
+	storage.poll_power_check:stagger_tick(POLL_PERIOD, event.tick, radars.poll_radar)
 end)
 
 -- this allows blueprint to copy custom settings, and supports on_entity_cloned
@@ -79,7 +79,7 @@ local function on_created_entity(event)
 	local entity = event.entity or event.destination
 	--game.print("on_created_entity: ".. serpent.block({ event, entity }))
 	
-	local copy_settings = (event.tags and event.tags["hexcoder_radar_uplink"])
+	local copy_settings = radars.tags_to_settings(event)
 	                   or (event.source and storage.radars[event.source.unit_number].S)
 	radars.init_radar(entity, copy_settings)
 end
@@ -103,25 +103,6 @@ script.on_event(defines.events.on_post_entity_died, function(event)
 		radars.settings_to_tags(event.ghost, event.unit_number)
 	end
 end, {{filter = "type", type = "radar"}})
-
--- for custom entities with custom settings, close any gui and call delete_radar/delete_platform
-script.on_event(defines.events.on_object_destroyed, function(event)
-	--game.print("on_object_destroyed: ".. serpent.line(event))
-	if storage.open_guis then
-		for player_i, gui in pairs(storage.open_guis) do
-			-- close open entity gui if entity destroyed
-			if event.useful_id == (gui and gui.data and gui.data.id) then
-				game.get_player(player_i).opened = nil
-			end
-		end
-	end
-	
-	if event.type == defines.target_type.entity then
-		radars.delete_radar(event.useful_id)
-	else
-		radars.delete_platform(event.useful_id)
-	end
-end)
 
 -- on_entity_settings_pasted doesn't get called for entities with no vanilla settings :(
 
@@ -172,7 +153,10 @@ deathrattles[defines.target_type.entity] = function(event)
 	radars.delete_radar(event.useful_id)
 end
 deathrattles[defines.target_type.space_platform] = function(event)
-	radars.delete_platform(event.useful_id)
+	storage.platforms:delete_platform(event.useful_id)
+end
+deathrattles[defines.target_type.planet] = function(event)
+	storage.platforms:update_all_platforms_list()
 end
 deathrattles[defines.target_type.surface] = function(event)
 	radar_channels.on_surface_event(event.useful_id)
@@ -188,20 +172,18 @@ end)
 
 ---- init
 
-settings = {
-	allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]],
-	poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value --[[@as integer]],
-}
+ALLOW_INTERPL = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value --[[@as boolean]]
+POLL_PERIOD = settings.global["hexcoder_radar_uplink-radar_poll_period"].value --[[@as integer]]
 
 script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
 	if event.setting == "hexcoder_radar_uplink-allow_interplanetary_comms" then
-		settings.allow_interpl = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
+		ALLOW_INTERPL = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
 		
 		radars.refresh_all_custom_radars()
 		radar_channels.update_all_channels_is_interplanetary()
+	else
+		POLL_PERIOD = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
 	end
-	
-	settings.poll_period = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
 end)
 
 ---@class player_index : integer
@@ -213,24 +195,24 @@ end)
 ---@class ModStorage
 ---@field open_guis table<player_index, OpenGui>
 ---@field radars table<unit_number, RadarData>
----@field platforms table<platform_index, PlatformData>
--- ---@field polling_platforms table<platform_index, PlatformData>
+---@field platforms Platforms
 ---@field channels Channels
----@field polling_radars RadarData[]
----@field polling_radars_cur integer
+---@field poll_power_check TickList
+---@field poll_dyn_select TickList
 
 function migrations.init()
 	storage.open_guis = {}
 	storage.radars = {}
-	storage.platforms = {} 
-	--storage.polling_platforms = {}
+	storage.platforms = Platforms.new()
 	storage.channels = { next_id=1, map={}, surfaces={} }
-	storage.polling_radars = {}
-	storage.polling_radars_cur = 1
+	storage.poll_power_check = myutil.TickList.new()
+	storage.poll_dyn_select = myutil.TickList.new()
 	
 	local ch = radar_channels.create_new_channel()
 	ch.name = "[Global]"
 	ch.is_interplanetary = false
+	
+	storage.platforms:update_all_platforms_list()
 	
 	for _, surface in pairs(game.surfaces) do
 		for _, r in ipairs(surface.find_entities_filtered{ type="radar", name="radar" }) do
@@ -250,6 +232,7 @@ function migrations.reset()
 	end
 	
 	storage = {}
+	migrations.init()
 end
 
 ---- debugging
