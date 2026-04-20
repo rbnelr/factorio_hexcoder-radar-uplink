@@ -204,6 +204,7 @@ local function gui_state_changed(event)
 	-- minizing should probably be in refresh_radar, but it's convenient here and avoids some data/ui desyncs
 	local S = {}
 	S.selected_platform = data.S.selected_platform -- take previous selection instead of pulling from ui list just before we update it
+	data.sel_sig = nil -- remove alert signal
 	
 	data.S = S
 	
@@ -270,6 +271,8 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		
 	else
 		data.S.selected_platform = gui.sel_items[event.element.selected_index]
+		data.sel_sig = nil -- remove alert signal
+		
 		gui_update_platform_list(gui, data) -- update list so that fake entries disappear
 	end
 	

@@ -19,6 +19,16 @@ TODO: add enough features for platform read mode to support fully automated mixe
   -> want to avoid reading circuit every tick, but no event, so might have to poll at low rate
   -> confirm signal sounds sensible for switching read target, but user can just keep sending same platform (but confirm signal might avoid user having to memory cell)
 
+TODO:
+- implement channel restrictions
+ -universal (any surface to surface)
+ -planet<->orbit, and any orbit<->orbit (orbital relay at src and dst planets)
+ -planet<->orbit, orbit<->nearby orbit (relays in space along entire space connection path)
+ -planet<->nearby planet (?)
+ 
+TODO:
+ -add big power draw when connecting to orbit, or even scale power draw with space connection distance? (customizable)
+
 TODO: make space age optional?
 TODO: figure out correct dependency versions?
 
@@ -30,7 +40,7 @@ TODO: copy paste? not really possible to to properly (with visual feedback?); bu
 ---@type ModStorage
 storage = storage
 
-DEBUG = false
+DEBUG = true
 
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
@@ -55,7 +65,7 @@ script.on_nth_tick(12, function(event)
 	--for _,data in pairs(storage.polling_platforms) do
 	-- Do this for all platform right now, to fix requests not reacting to user toggling sections
 	local platforms = storage.platforms
-	for _,data in ipairs(storage.platforms) do
+	for _,data in pairs(storage.platforms.all_sorted) do
 		platforms:poll_platform(data)
 	end
 end)

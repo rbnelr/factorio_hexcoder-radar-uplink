@@ -19,6 +19,7 @@
 ---@field id unit_number
 ---@field entity LuaEntity
 ---@field status defines.entity_status Last status for power check
+---@field sel_sig? Signal
 ---@field S RadarSettings
 ---@field dcs? table<string, LuaEntity> Hidden combinators that connect to platform readers
 
@@ -56,6 +57,7 @@ local outR = W.combinator_output_red
 local outG = W.combinator_output_green
 
 local SIG_EACH = {type="virtual", name="signal-each"} ---@type SignalID
+local SIG_ANYTHING = {type="virtual", name="signal-anything"} ---@type SignalID
 local SIG_EVERYTHING = {type="virtual", name="signal-everything"} ---@type SignalID
 local SIG_CHECK = {type="virtual", name="signal-check"} ---@type SignalID
 local SIG_ALERT = {type="virtual", name="signal-alert"} ---@type SignalID
@@ -345,15 +347,22 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	dcInvR     .disconnect_all(HIDDEN)
 	dcInvSlotsR.disconnect_all(HIDDEN)
 	dcCheckR   .disconnect_all(HIDDEN)
+		
+	local sel_sig = data.sel_sig
 	
 	if plat_data == nil then
 		-- return alert if not successfully connected
-
+		
 		---@type DeciderCombinatorParameters
 		local stat = {conditions={
 			{first_signal=SIG_EVERYTHING, constant=0, comparator="=", first_signal_networks=netR},
 		},outputs={
+			-- Alert signal to inform that connection failed
+			-- => non existant ID or index out of bounds
 			{signal=SIG_ALERT, copy_count_from_input=false},
+			-- Remember select signal that was used (P or #)
+			-- => user does not have to keep state, no memory cells or clock signals, TODO: circuit actually reasonable now?
+			sel_sig and {signal=sel_sig.signal, copy_count_from_input=false, constant=sel_sig.count} or nil
 		}}
 
 		scStatCtrl.parameters = stat
@@ -361,7 +370,14 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		--game.print("reconnect!")
 		
 		-- return status if connected
-		scStatCtrl.parameters = PASS_EACH
+		
+		local stat = {conditions={
+			{first_signal=SIG_ANYTHING, constant=0, comparator="!=", first_signal_networks=netR}
+		},outputs={
+			{signal=SIG_EVERYTHING, copy_count_from_input=true, networks=netR},
+			sel_sig and {signal=sel_sig.signal, copy_count_from_input=false, constant=sel_sig.count} or nil
+		}}
+		scStatCtrl.parameters = stat
 		
 		-- connect DCs to platform if platform initialized
 		local pl = plat_data.readers
@@ -380,11 +396,13 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 			local plOtw = pl.otw_raw.get_wire_connectors(true)
 			local plInv = pl.inv_raw.get_wire_connectors(true)
 			local plInvSlots = pl.inv_slots_raw.get_wire_connectors(true)
+			local plConsMats = pl.build_mats_raw.get_wire_connectors(true)
 			
 			dcReqR.connect_to(plReq[_outR], false, HIDDEN)
 			dcOtwR.connect_to(plOtw[_outR], false, HIDDEN)
 			dcInvR.connect_to(plInv[_outR], false, HIDDEN)
-			dcInvSlotsR.connect_to(plInvSlots[_outR], false, HIDDEN)
+			--dcInvSlotsR.connect_to(plInvSlots[_outR], false, HIDDEN)
+			dcInvSlotsR.connect_to(plConsMats[_outR], false, HIDDEN) -- temp HACK
 		end
 	end
 end
@@ -508,6 +526,7 @@ function M.poll_dyn_select(data)
 	local old_sel = data.S.selected_platform
 	if old_sel ~= new_sel then
 		data.S.selected_platform = new_sel
+		data.sel_sig = sel_sig
 		
 		-- utility/list_box_click
 		-- utility/entity_settings_pasted

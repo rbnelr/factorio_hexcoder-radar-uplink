@@ -143,12 +143,14 @@ function Platforms:init_platform(platform)
 	-- proxy container that automatically reads platform hub iventory without user needing to use "read contents" option
 	readers.inv_pc  = proxy_container("hexcoder_radar_uplink-pc", 1,0)
 	readers.inv_slots_cc  = combinator("hexcoder_radar_uplink-cc", 2,0, "platform inventory slots")
+	readers.build_mats_cc  = combinator("hexcoder_radar_uplink-cc", -1,-1, "(experimental) total construction materials (all ghosts summed up)")
 	
 	readers.stat    = combinator("hexcoder_radar_uplink-ac", -2,1.5, "platform status, delay=1", ARITH_IDENTITY, readers.loc_cc, {readers.stat_cc})
 	readers.req_raw = combinator("hexcoder_radar_uplink-ac", -1,1.5, "platform requests at current planet, delay=1", ARITH_IDENTITY, readers.req_cc)
 	readers.otw_raw = combinator("hexcoder_radar_uplink-ac", 0,1.5, "platform deliveries on the way, delay=1", ARITH_IDENTITY, readers.otw_cc)
 	readers.inv_raw = combinator("hexcoder_radar_uplink-ac", 1,1.5, "platform hub inventory negated, delay=1", ARITH_IDENTITY, readers.inv_pc)
 	readers.inv_slots_raw = combinator("hexcoder_radar_uplink-ac", 2,1.5, "platform hub inventory slots, delay=1", ARITH_IDENTITY, readers.inv_slots_cc)
+	readers.build_mats_raw = combinator("hexcoder_radar_uplink-ac", -1,-2, "", ARITH_IDENTITY, readers.build_mats_cc)
 	
 	readers.req = combinator("hexcoder_radar_uplink-ac", 2,-2, "unfulfilled platform requests", ARITH_RMINUSG, readers.req_cc, { readers.otw_cc, readers.inv_pc })
 	
@@ -364,7 +366,7 @@ function Platforms:update_platform_requests_at_planet(plat, data)
 		if logi and logi.filters then
 			-- filters are already compiled (all requests for one item summed) and filtered by import_from planet (unlike raw sections)
 			-- while in transit no filter is applied
-			for _, fil in ipairs(logi.filters) do
+			for _, fil in pairs(logi.filters) do
 				table.insert(signals, {
 					value = { type="item", name=fil.name, quality=fil.quality },
 					min = fil.count
@@ -393,7 +395,7 @@ function Platforms:update_platform_deliveries_on_the_way(plat, data)
 	-- Platform hub logistic points, for hubs we have 2: { requester, passive_provider }
 	local logi = plat.hub.get_logistic_point(defines.logistic_member_index.cargo_landing_pad_requester)
 	if logi and logi.targeted_items_deliver then
-		for _, item in ipairs(logi.targeted_items_deliver) do
+		for _, item in pairs(logi.targeted_items_deliver) do
 			if item.count > 0 then
 				table.insert(signals, {
 					value = { type="item", name=item.name, quality=item.quality },
@@ -421,6 +423,81 @@ function Platforms:update_platform_inv_slots(plat, data)
 	ctrl.sections[1].set_slot(1, {value=SIG_PLAT_INV_SLOTS, min=slots})
 end
 
+---@param plat LuaSpacePlatform
+---@param data? PlatformData
+function Platforms:update_platform_total_construction_mats(plat, data)
+	if not plat.valid then return end
+	data = data or self[plat.index]
+	if not data then return end
+	
+	local Q0 = "normal"
+	--for prototypes.quality
+	
+	local surf = plat.surface
+	--local tiles = surf.count_tiles_filtered{has_tile_ghost=true}
+	--local missing_tiles2 = surf.find_entities_filtered{type="tile-ghost", name="tile-ghost", ghost_type="tile"}
+	--local missing_tiles = surf.count_entities_filtered{type="tile-ghost", ghost_type="tile", ghost_name="space-platform-foundation"}
+	local missing_tiles = surf.count_entities_filtered{type="tile-ghost"} -- space-platform-foundation not found despite being returned when not filtering?
+	
+	local normal = {}
+	local counts = { [Q0]=normal }
+	
+	local ghosts = surf.find_entities_filtered{type="entity-ghost", quality={quality=Q0, comparator="="}}
+	for i=1,#ghosts do local g = ghosts[i]
+		local t = normal[g.ghost_type] or {}
+		local c = t[g.ghost_name] or 0
+		t[g.ghost_name] = c + 1
+		normal[g.ghost_type] = t
+	end
+	
+	local ghosts = surf.find_entities_filtered{type="entity-ghost", quality={quality=Q0, comparator=">"}}
+	for i=1,#ghosts do local g = ghosts[i]
+		local q = counts[g.quality]
+		if not q then q = {}; counts[g.quality] = q end
+		local t = q[g.ghost_type] or {}
+		local c = t[g.ghost_name] or 0
+		t[g.ghost_name] = c + 1
+		q[g.ghost_type] = t
+	end
+	
+	local items = surf.find_entities_filtered{type="item-request-proxy"}
+	for i=1,#items do local item = items[i]
+		
+	end
+	
+	--local item_inside = surf.find_entities_filtered{type="entity-ghost", has_item_inside=true}
+	
+	
+	local signals = {}
+	
+	for quality,quality_list in pairs(counts) do
+		for type,type_list in pairs(quality_list) do
+			for name,count in pairs(type_list) do
+				-- technically we need to do this?
+				--prototypes.entity[name].items_to_place_this[1].
+				table.insert(signals, {
+					-- is type irrelevant?
+					value = { type="item", name=name, quality=quality },
+					min = count
+				})
+			end
+		end
+	end
+	
+	if missing_tiles > 0 then
+		table.insert(signals, {
+			-- is type irrelevant?
+			value = { type="item", name="space-platform-foundation", quality=Q0 },
+			min = missing_tiles
+		})
+	end
+	
+	local ctrl = data.readers.build_mats_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	ctrl.sections[1].filters = signals
+	
+	--game.print("update_platform_total_construction_mats: "..serpent.block({ missing_tiles, counts }))
+end
+
 ---@param data PlatformData
 function Platforms:poll_platform(data)
 	local plat = data.entity
@@ -434,6 +511,10 @@ function Platforms:poll_platform(data)
 	
 	-- update via polling for now, could probabably also react to hub and cargo bay build and destroy events?
 	self:update_platform_inv_slots(plat, data)
+	
+	if plat.index == 28 then
+		self:update_platform_total_construction_mats(plat, data)
+	end
 end
 
 -- this does not seem to get called when a platform gets deleted
