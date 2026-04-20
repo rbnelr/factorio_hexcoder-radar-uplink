@@ -30,7 +30,7 @@ TODO: copy paste? not really possible to to properly (with visual feedback?); bu
 ---@type ModStorage
 storage = storage
 
-DEBUG = true
+DEBUG = false
 
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
@@ -38,6 +38,8 @@ local Platforms = require("script.platforms")
 local radar_gui = require("script.radar_gui")
 local migrations = require("script.migrations")
 local myutil = require("script.myutil")
+
+local SEL_POLL_PERIOD = 15
 
 -- Keep in nth tick or also stagger_tick? maybe infrequently updating distance readings are cleaner if synched?
 script.on_nth_tick(12, function(event)
@@ -69,7 +71,8 @@ script.on_event(defines.events.on_tick, function(event)
 	
 	--storage.poll_power_check:tick(POLL_PERIOD, event.tick, radars.poll_radar)
 	
-	storage.poll_power_check:stagger_tick(POLL_PERIOD, event.tick, radars.poll_radar)
+	storage.poll_dyn_select:stagger_tick(event.tick, SEL_POLL_PERIOD, radars.poll_dyn_select)
+	storage.poll_power_check:stagger_tick(event.tick, POLL_PERIOD, radars.poll_radar)
 end)
 
 -- this allows blueprint to copy custom settings, and supports on_entity_cloned
@@ -193,15 +196,21 @@ end)
 ---@class channel_id : number
 
 ---@class ModStorage
----@field open_guis table<player_index, OpenGui>
 ---@field radars table<unit_number, RadarData>
 ---@field platforms Platforms
 ---@field channels Channels
+---@field open_guis table<player_index, OpenGui>
+---@field open_guis2 table<RadarData, OpenGui>
 ---@field poll_power_check TickList
 ---@field poll_dyn_select TickList
 
+script.register_metatable("ArrayList", myutil.ArrayList)
+script.register_metatable("TickList", myutil.TickList)
+script.register_metatable("Platforms", Platforms)
+
 function migrations.init()
 	storage.open_guis = {}
+	storage.open_guis2 = {}
 	storage.radars = {}
 	storage.platforms = Platforms.new()
 	storage.channels = { next_id=1, map={}, surfaces={} }

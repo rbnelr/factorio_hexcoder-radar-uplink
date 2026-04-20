@@ -186,11 +186,15 @@ end
 ---@param self ArrayList
 ---@param item Item
 function ArrayList:remove(item)
+	assert(self[item] ~= nil)
 	-- delete by swap with last
 	local last_idx = #self
 	local idx  = self[item]     ; self[item] = nil
 	local last = self[last_idx] ; self[last_idx] = nil
-	self[idx] = last ; self[last] = idx
+	if idx ~= last_idx then
+		self[idx] = last
+		self[last] = idx
+	end
 end
 ---@generic T : table
 ---@param self ArrayList
@@ -202,7 +206,10 @@ function ArrayList:try_remove(item)
 	local last_idx = #self
 	local idx  = self[item]     ; self[item] = nil
 	local last = self[last_idx] ; self[last_idx] = nil
-	self[idx] = last ; self[last] = idx
+	if idx ~= last_idx then
+		self[idx] = last
+		self[last] = idx
+	end
 	return true
 end
 
@@ -214,7 +221,9 @@ local ceil = math.ceil
 local TickList = {}
 TickList.__index = TickList
 TickList.add = ArrayList.add
+TickList.try_add = ArrayList.try_add
 TickList.remove = ArrayList.remove
+TickList.try_remove = ArrayList.try_remove
 
 ---@return TickList
 function TickList.new()

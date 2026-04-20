@@ -58,6 +58,10 @@ local outG = W.combinator_output_green
 local SIG_EACH = {type="virtual", name="signal-each"} ---@type SignalID
 local SIG_EVERYTHING = {type="virtual", name="signal-everything"} ---@type SignalID
 local SIG_CHECK = {type="virtual", name="signal-check"} ---@type SignalID
+local SIG_ALERT = {type="virtual", name="signal-alert"} ---@type SignalID
+
+local SIG_PLAT_ID = {type="virtual", name="signal-P"} ---@type SignalID
+local SIG_IDX_NUM = {type="virtual", name="signal-number-sign"} ---@type SignalID
 
 ---@type DeciderCombinatorParameters
 local PASS_EACH = {conditions={
@@ -184,6 +188,7 @@ function M.delete_radar(id)
 		storage.radars[id] = nil
 		
 		storage.poll_power_check:remove(data)
+		storage.poll_dyn_select:try_remove(data)
 	end
 end
 
@@ -211,6 +216,12 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	local dcs = data.dcs
 	
 	if not dcs or reconfig then
+		if data.S.dyn ~= nil then
+			storage.poll_dyn_select:try_add(data)
+		else
+			storage.poll_dyn_select:try_remove(data)
+		end
+		
 		local radar_planet = radar_surf.planet -- nil if radar placed on space platform
 		
 		local allow_unchecked = ALLOW_INTERPL and data.S.read_mode == "raw"
@@ -320,6 +331,7 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	local _outR = outR
 	local _circR = circR
 	
+	local scStatCtrl = dcs.Sta.get_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
 	local dcStatR     = dcs.Sta.get_wire_connectors(false)[_inR]
 	local dcReqR      = dcs.Req.get_wire_connectors(false)[_inR]
 	local dcOtwR      = dcs.Otw.get_wire_connectors(false)[_inR]
@@ -334,8 +346,22 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	dcInvSlotsR.disconnect_all(HIDDEN)
 	dcCheckR   .disconnect_all(HIDDEN)
 	
-	if plat_data then
+	if plat_data == nil then
+		-- return alert if not successfully connected
+
+		---@type DeciderCombinatorParameters
+		local stat = {conditions={
+			{first_signal=SIG_EVERYTHING, constant=0, comparator="=", first_signal_networks=netR},
+		},outputs={
+			{signal=SIG_ALERT, copy_count_from_input=false},
+		}}
+
+		scStatCtrl.parameters = stat
+	else
 		--game.print("reconnect!")
+		
+		-- return status if connected
+		scStatCtrl.parameters = PASS_EACH
 		
 		-- connect DCs to platform if platform initialized
 		local pl = plat_data.readers
@@ -381,6 +407,7 @@ function M.refresh_radar(data, sel_changed_only)
 	
 	if data.S.mode == "comms" then
 		clear_dcs(data)
+		storage.poll_dyn_select:try_remove(data)
 	elseif data.S.mode == "platforms" then
 		refresh_radar_platform_mode(entity, data, not sel_changed_only)
 	end
@@ -435,14 +462,65 @@ function M.init_radar(entity, copy_settings)
 	return data
 end
 
--- TODO: was this intended to be the dynamic selection poll?
--- because that's not fast, it's likely slower than checking status...
--- rename!
 ---@param data RadarData
-function M.poll_radar_fast(data)
-	local entity = data.entity
-	if entity.valid then
+---@param entity LuaEntity
+---@return LuaSpacePlatform?, Signal? sel_sig
+local function dyn_select_platform(data, entity)
+	local S = data.S
+	local wireR = S.dyn.R and circR or nil
+	local wireG = S.dyn.G and circG or nil
+	
+	local wires1 = wireR or wireG
+	local wires2 = wireR and wireG
+	if not wires1 then
+		return nil
+	end
+	
+	local id
+	if wires2 == nil then id = entity.get_signal(SIG_PLAT_ID, wires1)
+	                 else id = entity.get_signal(SIG_PLAT_ID, wires1, wires2) end
+	--local id = entity.get_signal(SIG_PLAT_ID, wires1, wires2) -- this does not work despite  extra_wire_connector_id :: defines.wire_connector_id?
+	-- is there actually function overloading for userdata functions?
+	if id > 0 then
+		local plat_data = storage.platforms[id]
+		return plat_data and plat_data.entity, {signal=SIG_PLAT_ID, count=id}
+	end
+	
+	local idx
+	if wires2 == nil then idx = entity.get_signal(SIG_IDX_NUM, wires1)
+	                 else idx = entity.get_signal(SIG_IDX_NUM, wires1, wires2) end
+	if idx > 0 then
+		local list = M.get_platform_list(data)
 		
+		local plat_data = list[idx]
+		return plat_data and plat_data.entity, {signal=SIG_IDX_NUM, count=idx}
+	end
+	
+	return nil
+end
+
+---@param data RadarData
+function M.poll_dyn_select(data)
+	local entity = data.entity
+	if not entity.valid then return end
+	
+	local new_sel, sel_sig = dyn_select_platform(data, entity)
+	local old_sel = data.S.selected_platform
+	if old_sel ~= new_sel then
+		data.S.selected_platform = new_sel
+		
+		-- utility/list_box_click
+		-- utility/entity_settings_pasted
+		-- utility/smart_pipette
+		--entity.surface.play_sound{ path="utility/entity_settings_pasted", position=entity.position, volume_multiplier=1.25, override_sound_type="game-effect" }
+		--entity.surface.play_sound{ path="utility/smart_pipette", position=entity.position, volume_multiplier=5.0, override_sound_type="game-effect" }
+		
+		entity.surface.play_sound{ path="hexcoder_radar_uplink-sel-switch-sound1", position=entity.position }
+		entity.surface.play_sound{ path="hexcoder_radar_uplink-sel-switch-sound2", position=entity.position }
+		
+		M.refresh_radar(data, true)
+		
+		refresh_gui(data)
 	end
 end
 

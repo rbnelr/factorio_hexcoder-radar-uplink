@@ -357,22 +357,18 @@ function Platforms:update_platform_requests_at_planet(plat, data)
 	  and plat.state ~= defines.space_platform_state.on_the_path
 	  and plat.state ~= defines.space_platform_state.waiting_for_departure
 	if enable_requests then
-		table.insert(signals, SIG_INFO_1)
+		--table.insert(signals, SIG_INFO_1)
 		
 		-- Platform hub logistic points, for hubs we seem to always have 2: { requester, passive_provider }
 		local logi = plat.hub.get_logistic_point(defines.logistic_member_index.cargo_landing_pad_requester)
 		if logi and logi.filters then
-			--game.print(">> filters: ")
 			-- filters are already compiled (all requests for one item summed) and filtered by import_from planet (unlike raw sections)
 			-- while in transit no filter is applied
 			for _, fil in ipairs(logi.filters) do
-				--game.print(" > ".. serpent.line(fil))
-				--if fil.count > 0 then
-					table.insert(signals, {
-						value = { type="item", name=fil.name, quality=fil.quality },
-						min = fil.count
-					})
-				--end
+				table.insert(signals, {
+					value = { type="item", name=fil.name, quality=fil.quality },
+					min = fil.count
+				})
 				--table.insert(signals, { -- TODO: try assinging fil directly to value, as an optimization?
 				--	value = fil,
 				--	min = fil.count

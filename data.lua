@@ -23,5 +23,21 @@ data:extend({
 		category = "gui-effect",
 		volume = 0.25,
 		speed = 1.04
+	},
+	{
+		type = "sound",
+		name = mod_name.."sel-switch-sound1",
+		filename = "__core__/sound/list-box-click.ogg",
+		category = "game-effect",
+		volume = 1.0,
+		speed = 0.9
+	},
+	{
+		type = "sound",
+		name = mod_name.."sel-switch-sound2",
+		filename = "__core__/sound/smart-pipette.ogg",
+		category = "game-effect",
+		volume = 6.0,
+		speed = 0.85
 	}
 })
