@@ -61,7 +61,7 @@ end)
 script.on_event(defines.events.on_tick, function(event)
 	if DEBUG then
 		if not _did_reset then
-			migrations.reset()
+			migrations.migrate_less0_1_4()
 			_did_reset = true
 		end
 	end
@@ -76,10 +76,10 @@ end)
 -- TODO: blueprinting over does not trigger any events (could detect blueprint placed by player in other ways, but is complicated)
 -- TODO: things being built due to undo redo don't work yet
 local function on_created_entity(event)
-	local entity = event.entity or event.destination
+	local entity = event.entity or event.destination --[[@as LuaEntity]]
 	--game.print("on_created_entity: ".. serpent.block({ event, entity }))
 	
-	local copy_settings = radars.tags_to_settings(event)
+	local copy_settings = radars.tags_to_settings(event.tags, entity.force --[[@as LuaForce]])
 	                   or (event.source and storage.radars[event.source.unit_number].S)
 	radars.init_radar(entity, copy_settings)
 end
@@ -179,7 +179,7 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
 	if event.setting == "hexcoder_radar_uplink-allow_interplanetary_comms" then
 		ALLOW_INTERPL = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
 		
-		radars.refresh_all_custom_radars()
+		radars.refresh_all_radars()
 		radar_channels.update_all_channels_is_interplanetary()
 	else
 		POLL_PERIOD = settings.global["hexcoder_radar_uplink-radar_poll_period"].value

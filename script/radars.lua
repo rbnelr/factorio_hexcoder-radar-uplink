@@ -9,12 +9,25 @@
 	refresh_radar fully updates circuits to correspond to settings
 ]]
 
+-- TODO: INFO signal that is included in requests makes sense for std read mode, as user might not be interested in status,
+-- just in unfulfilled requests of platform if in orbit, and info helps to not get confused if requests zero or not in orbit
+-- but probably should not be sent when in raw mode (move it into combinator, not on platform CC)
+-- it could be annoying if it's something to filter out, but the alternative might be filtering out all status signals if you want it on a single wire
+-- could just remove it and require users checking status, or make it customizable, maybe a no-info signals is more useful anyway?
+
 ---@class RadarData
 ---@field id unit_number
 ---@field entity LuaEntity
 ---@field status defines.entity_status Last status for power check
 ---@field S RadarSettings
 ---@field dcs? table<string, LuaEntity> Hidden combinators that connect to platform readers
+
+-- TODO: sel_orbit_only only makes sense when in dynamic selection mode
+-- otherwise it does nothing except act as a filter in the gui
+-- I don't want the fixed selection to somehow auto-reset if the platform moves out of orbit
+-- so this either disable in gui or keep as filter option, but maybe not as it is confusing?
+-- probably should move it to dyn panel
+-- Actually -> even in dyn mode, ID selection should just be universal anyway, as failing to select
 
 -- TODO: remove Settings and merge using ---@class RadarData : RadarSettings? use strict to luals checks everything?
 ---@class RadarSettings
@@ -87,30 +100,34 @@ function M.set_tags(ghost, S)
 	if T.mode == "comms" then
 		T.selected = nil -- TODO
 	else
+		-- remember name and id
 		T.selected_id = T.selected_platform and T.selected_platform.index or nil
-		local platf = T.selected_id and ghost.force.platforms[T.selected_id] or nil
-		T.selected_name = platf and platf.name
+		T.selected_name = T.selected_platform and T.selected_platform.name
 		T.selected_platform = nil
 	end
 	local tags = ghost.tags or {}
-	tags["hexcoder_radar_uplink"] = S
+	tags["hexcoder_radar_uplink"] = T
 	ghost.tags = tags
 end
----@param ghost LuaEntity|BlueprintEntity
+---@param tags table?
+---@param as_force LuaForce
 ---@return RadarSettings?
-function M.tags_to_settings(ghost)
-	local T = ghost.tags and ghost.tags["hexcoder_radar_uplink"]
+function M.tags_to_settings(tags, as_force)
+	local T = tags and tags["hexcoder_radar_uplink"]
 	if not T then return nil end
 	
 	local S = util.table.deepcopy(T)
 	if S.mode == "comms" then
 		-- TODO
 	else
-		local platforms = ghost.force.platforms
-		S.selected_platform = platforms[S.selected_id]
-		if not (S.selected_platform and S.selected_platform.name == S.selected_name) then
-			for _, pl in pairs(platforms) do -- id not found, search by name
-				if pl.name == S.selected_name then S.selected_platform = pl break end
+		-- get platform via id, check name and fallback to name-based search
+		if S.selected_id then
+			local platforms = as_force.platforms
+			S.selected_platform = platforms[S.selected_id]
+			if not (S.selected_platform and S.selected_platform.name == S.selected_name) then
+				for _, pl in pairs(platforms) do
+					if pl.name == S.selected_name then S.selected_platform = pl break end
+				end
 			end
 		end
 		S.selected_id = nil
@@ -136,11 +153,11 @@ M.radar_defaults = {
 	dyn = { ---@type CircRG
 		R=true, G=true, -- R, G
 	},
-	pl_std = { ---@type CircRG[]
+	std = { ---@type CircRG[]
 		Sta = { R=true, G=true }, -- R, G
 		Req = { R=true, G=true },
 	},
-	pl_raw = { ---@type CircRG[]
+	raw = { ---@type CircRG[]
 		Sta = { R=false, G=true },
 		Req = { R=false, G=true },
 		Otw = { R=true, G=false },
@@ -171,11 +188,10 @@ function M.delete_radar(id)
 end
 
 ---@param data RadarData
----@return PlatformData[], string? planet_name
+---@return PlatformData[]
 function M.get_platform_list(data)
-	local planet = data.S.sel_orbit_only and data.entity.surface.planet or nil
-	if planet then
-		return storage.platforms:get_orbiting_platform_list(planet)
+	if data.S.sel_orbit_only then
+		return storage.platforms:get_orbiting_platform_list(data.entity.surface)
 	else
 		return storage.platforms.all_sorted
 	end
@@ -187,8 +203,8 @@ end
 local function refresh_radar_platform_mode(entity, data, reconfig)
 	local platforms = storage.platforms
 	local platform = data.S.selected_platform
-	local plat_data = platform and platforms:init_platform(platform) or nil
-	assert((platform ~= nil) == (platforms.platform_exists(platform) == true))
+	local plat_data = (platform and platform.valid and platforms:init_platform(platform)) or nil
+	assert((plat_data ~= nil) == (platforms.platform_exists(platform) == true))
 	--if true then return end
 	
 	local radar_surf = entity.surface
@@ -283,8 +299,7 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		local dcInvSlots = config_combinator(dcs.InvSlots, params_detail, data.S.read.InvSlots)
 		local dcCheck    = config_combinator(dcs.Check, params_check)
 		
-		local this_plat = radar_surf.platform and M.platform_valid(radar_surf.platform) and M.init_platform(radar_surf.platform) or nil
-		
+		local this_plat = radar_surf.platform and platforms:init_platform(radar_surf.platform) or nil
 		if this_plat then
 			local pl2LocCC = this_plat.readers.loc_cc.get_wire_connectors(true)
 			dcCheck[inG].connect_to(pl2LocCC[circG], false, HIDDEN)
@@ -301,29 +316,29 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		end
 	end
 	
+	local _inR = inR
+	local _outR = outR
+	local _circR = circR
+	
+	local dcStatR     = dcs.Sta.get_wire_connectors(false)[_inR]
+	local dcReqR      = dcs.Req.get_wire_connectors(false)[_inR]
+	local dcOtwR      = dcs.Otw.get_wire_connectors(false)[_inR]
+	local dcInvR      = dcs.Inv.get_wire_connectors(false)[_inR]
+	local dcInvSlotsR = dcs.InvSlots.get_wire_connectors(false)[_inR]
+	local dcCheckR    = dcs.Check.get_wire_connectors(false)[_inR]
+	
+	dcStatR    .disconnect_all(HIDDEN)
+	dcReqR     .disconnect_all(HIDDEN)
+	dcOtwR     .disconnect_all(HIDDEN)
+	dcInvR     .disconnect_all(HIDDEN)
+	dcInvSlotsR.disconnect_all(HIDDEN)
+	dcCheckR   .disconnect_all(HIDDEN)
+	
 	if plat_data then
 		--game.print("reconnect!")
 		
 		-- connect DCs to platform if platform initialized
 		local pl = plat_data.readers
-	
-		local _inR = inR
-		local _outR = outR
-		local _circR = circR
-		
-		local dcStatR     = dcs.Sta.get_wire_connectors(false)[_inR]
-		local dcReqR      = dcs.Req.get_wire_connectors(false)[_inR]
-		local dcOtwR      = dcs.Otw.get_wire_connectors(false)[_inR]
-		local dcInvR      = dcs.Inv.get_wire_connectors(false)[_inR]
-		local dcInvSlotsR = dcs.InvSlots.get_wire_connectors(false)[_inR]
-		local dcCheckR    = dcs.Check.get_wire_connectors(false)[_inR]
-		
-		dcStatR    .disconnect_all(HIDDEN)
-		dcReqR     .disconnect_all(HIDDEN)
-		dcOtwR     .disconnect_all(HIDDEN)
-		dcInvR     .disconnect_all(HIDDEN)
-		dcInvSlotsR.disconnect_all(HIDDEN)
-		dcCheckR   .disconnect_all(HIDDEN)
 		
 		local plLocCC = pl.loc_cc.get_wire_connectors(true)
 		local plStat = pl.stat.get_wire_connectors(true)
@@ -348,10 +363,13 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	end
 end
 
+-- TODO: refresh is a bad term, this actually reconfigures world state based on configuration data usually coming from ui
+-- -> reconfigure is full data change,  -> reconnect is if only selection has changed and is called by dynamic selection polling after detecting change
 ---@param data RadarData
 ---@param sel_changed_only? boolean
 function M.refresh_radar(data, sel_changed_only)
 	local entity = data.entity
+	if not entity.valid then return end
 	local id = data.id
 	--game.print("refresh_radar: ".. serpent.block(data))
 	
@@ -377,6 +395,8 @@ end
 ---@param copy_settings RadarSettings?
 ---@return RadarData
 function M.init_radar(entity, copy_settings)
+	assert(entity and entity.valid)
+	
 	local id = entity.unit_number
 	local data = storage.radars[id]
 	if not data then
@@ -384,7 +404,7 @@ function M.init_radar(entity, copy_settings)
 		if copy_settings then
 			S = util.table.deepcopy(copy_settings)
 		else
-			local tags = M.tags_to_settings(entity)
+			local tags = M.tags_to_settings(entity.tags, entity.force --[[@as LuaForce]])
 			if tags then -- handle allowing gui from ghost entities
 				S = tags
 			else
@@ -415,6 +435,9 @@ function M.init_radar(entity, copy_settings)
 	return data
 end
 
+-- TODO: was this intended to be the dynamic selection poll?
+-- because that's not fast, it's likely slower than checking status...
+-- rename!
 ---@param data RadarData
 function M.poll_radar_fast(data)
 	local entity = data.entity
@@ -436,7 +459,7 @@ function M.poll_radar(data)
 	end
 end
 
-function M.refresh_all_custom_radars()
+function M.refresh_all_radars()
 	for _,data in pairs(storage.radars) do
 		M.refresh_radar(data)
 	end

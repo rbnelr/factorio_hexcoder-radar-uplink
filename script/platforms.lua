@@ -168,13 +168,13 @@ function Platforms:init_platform(platform)
 end
 ---@param id platform_index
 function Platforms:delete_platform(id)
-	local data = storage.platforms[id]
+	local data = self[id]
 	if data then
 		for _,e in pairs(data.readers) do
 			e.destroy()
 		end
 		data.readers = nil
-		storage.platforms[id] = nil
+		self[id] = nil
 	end
 	
 	self:update_all_platforms_list()
@@ -199,7 +199,6 @@ function Platforms:update_all_platforms_list()
 end
 
 -- invalidate orbiting platforms, refresh any open guis
--- lazily regenerate orbiting platform list only when actually needed in get_orbiting_platform_list
 ---@param planet LuaSpaceLocationPrototype
 function Platforms:invalidate_orbiting_platform_list(planet)
 	local planet_name = planet.name
@@ -208,28 +207,46 @@ function Platforms:invalidate_orbiting_platform_list(planet)
 	refresh_all_guis()
 end
 
----@param planet LuaPlanet
+-- return current orbiting "nearby" plaforms list
+-- ground surface has fixed planet
+-- space platform is either in orbit with other platforms or on space_location where only itself counts as nearby
+---@param surface LuaSurface
 ---@return PlatformData[]
-function Platforms:get_orbiting_platform_list(planet)
+function Platforms:get_orbiting_platform_list(surface)
+	local planet = surface.planet or surface.platform.space_location
+	if planet == nil then
+		assert(surface.platform ~= nil)
+		local plat_data = self[surface.platform.index]
+		return { plat_data }
+	end
+	
+	-- return cached planet list or recreate an invalidated one
 	local planet_name = planet.name
 	local orbiting = self.orbiting[planet_name]
-	if orbiting then
-		return orbiting
-	end
-	
-	script.register_on_object_destroyed(planet)
-	
-	orbiting = {}
-	local counter = 1
-	for _, platf in pairs(planet.get_space_platforms(game.forces.player)) do
-		local data = self[platf.index]
-		if data then
-			orbiting[counter] = data
-			counter = counter+1
+	if not orbiting then
+		-- get actual planet for LuaSpaceLocationPrototype
+		-- not sure why API for space_location even gives LuaSpaceLocationPrototype? can a LuaSpaceLocationPrototype not have a planet?
+		if planet.object_name == "LuaSpaceLocationPrototype" then
+			planet = game.planets[planet_name]
+			assert(planet ~= nil)
+			if not planet then return {} end
 		end
+		---@cast planet LuaPlanet
+		
+		script.register_on_object_destroyed(planet)
+		
+		orbiting = {}
+		local counter = 1
+		for _, platf in pairs(planet.get_space_platforms(game.forces.player)) do
+			local data = self[platf.index]
+			if data then
+				orbiting[counter] = data
+				counter = counter+1
+			end
+		end
+		
+		self.orbiting[planet_name] = orbiting
 	end
-	
-	self.orbiting[planet_name] = orbiting
 	return orbiting
 end
 
@@ -423,6 +440,8 @@ function Platforms:poll_platform(data)
 	self:update_platform_inv_slots(plat, data)
 end
 
+-- this does not seem to get called when a platform gets deleted
+-- so I may have to add .valid checks to all platforms as on_object_destroyed is unreliable
 script.on_event(defines.events.on_space_platform_changed_state, function(event)
 	--local names = {
 	--	[defines.space_platform_state.waiting_for_starter_pack] = "waiting_for_starter_pack",

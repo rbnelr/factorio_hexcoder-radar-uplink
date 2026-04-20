@@ -32,24 +32,36 @@ function M.migrate_less0_1_4()
 	for id,data in pairs(storage.radars) do
 		local old_data = old_radars[id]
 		if old_data and old_data.entity and old_data.entity.valid and old_data.entity.unit_number and old_data.S then
-			data.S.mode = old_data.S.mode == "platforms" and "platforms" or "comms"
+			local S = {}
+			S.mode = old_data.S.mode == "platforms" and "platforms" or "comms"
+			
+			S.sel_orbit_only = old_data.S.sel_orbit_only
+			S.dyn = old_data.S.dyn
+			S.dyn_text = old_data.S.dyn_text
+			
 			if old_data.S.mode == "platforms" then
-				data.S.read_mode = old_data.S.read_mode == "raw" and "raw" or "std"
-				data.S.read = data.S.read or {}
-				for k,_ in pairs(radars.radar_defaults["pl_"..data.S.read_mode]) do
-					data.S.read[k] = old_data.S.read and old_data.S.read[k] or { false, false } -- copy setting or false to avoid affecting existing circuits
+				S.read_mode = old_data.S.read_mode == "raw" and "raw" or "std"
+				S.read = {}
+				for k,_ in pairs(radars.radar_defaults[S.read_mode]) do ---@diagnostic disable-line
+					S.read[k] = old_data.S.read and old_data.S.read[k] or { false, false } -- copy setting or false to avoid affecting existing circuits
 				end
-				data.S.selected_platform = nil
-				if new_platforms[data.entity.force.index][old_data.S.selected_platform] then
-					data.S.selected_platform = old_data.S.selected_platform
+				
+				S.selected_platform = nil
+				
+				local sel = old_data.S.selected_platform
+				if sel and sel.object_name == "LuaSpacePlatform" then
+					S.selected_platform = sel
+				elseif type(sel) == "number" then
+					S.selected_platform = new_platforms[data.entity.force.index][sel]
 				end
 			else
-				data.S.selected_channel = 0
+				S.selected_channel = 0
 				if storage.channels.map[old_data.S.selected_channel] then
-					data.S.selected_channel = old_data.S.selected_channel
+					S.selected_channel = old_data.S.selected_channel
 				end
 			end
 			
+			data.S = S
 			radars.refresh_radar(data)
 		end
 	end

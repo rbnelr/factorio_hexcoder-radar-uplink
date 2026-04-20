@@ -1,12 +1,10 @@
 ---@class OpenGui
----@field refs table
+---@field refs GuiRefs
 ---@field data RadarData Holds reference to data in storage for opened radar, or independent data if opening gui on ghost entity (created from tags)
----@field planet LuaPlanet? The planet the radar is on
 ---@field sel_items LuaSpacePlatform[]|nil
 
 local radars = require("script.radars")
 local radar_channels = require("script.radar_channels")
-local platforms = require("script.platforms")
 require("script.myutil")
 
 local M = {}
@@ -14,6 +12,7 @@ local M = {}
 local MODES
 local READ_MODES
 
+--[[
 ---@param gui OpenGui
 ---@param data RadarData
 local function gui_update_channels(gui, data)
@@ -50,35 +49,52 @@ local function gui_update_channels(gui, data)
 	gui.refs.ch_delete.enabled = can_edit
 	gui.refs.ch_interplanetary.enabled = can_edit and ALLOW_INTERPL
 end
+]]
 
+-- build platform list depending on mode and settings for gui, including what is currently selected
+-- does not update radar! (data -> gui)
 ---@param gui OpenGui
 ---@param data RadarData
 local function gui_update_platform_list(gui, data)
 	local list = radars.get_platform_list(data)
 	
-	local gui_names = { "[color=#a0a0a0][font=default-small]ID    [/font][/color][None]" }
+	local gui_names = { "[color=#a0a0a0][font=default-small]ID    [/font][None][/color]" }
 	local gui_items = { nil }
-	local sel_idx = 1
+	local idx = 2 -- next insert index
+	local sel_idx = nil
 	local sel = data.S.selected_platform
 	
-	for idx, plat in ipairs(list) do
+	for _, plat in pairs(list) do
 		local pl = plat.entity
-		local suffix = ""
-		if pl.scheduled_for_deletion ~= 0 then suffix = "[color=#f00000][virtual-signal=signal-trash-bin] (Scheduled for deletion)[/color]" end
-		
-		gui_names[idx+1] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color]%s %s", pl.index, pl.name, suffix)
-		gui_items[idx+1] = pl
-		
-		if sel == pl then
-			sel_idx = idx+1
+		if pl and pl.valid then -- platforms in list should not be invalid, but check anyway
+			local suffix = ""
+			if pl.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000](Scheduled for deletion)[/color]" end
+			
+			gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color]%s%s", pl.index, pl.name, suffix)
+			gui_items[idx] = pl
+			
+			if sel == pl then
+				sel_idx = idx
+			end
+			idx = idx + 1
 		end
 	end
 	
-	if sel_idx <= 1 then
-		if sel and sel.valid then
-			sel_idx = #gui_names+1
-			gui_names[sel_idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not in orbit)[/color]", sel.index, sel.name)
-			gui_items[sel_idx] = sel
+	if sel_idx == nil then -- sel not in list, either nothing selected, platform deleted or not in orbit
+		if sel == nil then
+			sel_idx = 1 -- select [None] in ui
+		else
+			-- add fake entry at the end to show what was selected despite not showing in ui, as the selection stays
+			sel_idx = idx
+			gui_items[idx] = sel
+			if sel.valid then
+				-- Not in list because not in orbit
+				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not in orbit)[/color]", sel.index, sel.name)
+			else
+				-- Not in list because it must have been deleted, don't silently pretend nothing was selected!
+				-- index not safe to read if not valid? despite the fact that it is unique and likely still there?
+				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small] ?    [/font][/color] [color=#b0b0b0](Deleted platform)[/color]")
+			end
 		end
 	end
 	
@@ -87,12 +103,16 @@ local function gui_update_platform_list(gui, data)
 	gui.sel_items = gui_items
 end
 
+-- handle ui element visbility and greyed-out state (gui -> gui)
 ---@param gui OpenGui
----@param refs GuiRefs
-local function gui_update_vis_en(gui, refs)
-	refs.sel_orbit_only.enabled = gui.planet ~= nil
+local function gui_update_vis_en(gui)
+	local refs = gui.refs
 	
 	local mode = update_radiobutton(refs, MODES)
+	
+	refs.dynR.enabled = refs.dyn_enable.state
+	refs.dynG.enabled = refs.dyn_enable.state
+	refs.dyn_text.visible = refs.dyn_enable.state
 	
 	--refs.comms_pane.visible = mode == "comms"
 	refs.pl_config.visible = mode == "platforms"
@@ -103,69 +123,56 @@ local function gui_update_vis_en(gui, refs)
 		--refs.pl_std.visible = read_mode == "std"
 		--refs.pl_raw.visible = read_mode == "raw"
 		
-		local raw = S.read_mode == "right"
-		refs.pl_std.visible = read_mode == "std"
-		refs.pl_raw.visible = read_mode == "raw"
+		local raw = refs.pl_mode.switch_state == "right"
+		refs.pl_std.visible = not raw
+		refs.pl_raw.visible = raw
 	end
-	
-	refs.dynR.enabled = refs.dyn_enable.state
-	refs.dynG.enabled = refs.dyn_enable.state
-	refs.dyn_text.visible = refs.dyn_enable.state
 end
 
--- init ui from data
+-- init ui from data or defaults (data -> gui)
+-- this needs to update all invisible ui elements too!
 ---@param gui OpenGui
 ---@param data RadarData
 local function radar2gui(gui, data)
+	assert(data.entity and data.entity.valid)
+	
 	--radar_gui_update_channels(gui, data)
 	gui_update_platform_list(gui, data)
 	
 	local refs = gui.refs
-	local S = gui.data.S
+	local S = data.S
 	
-	refs.sel_orbit_only.state = (gui.planet and S.sel_orbit_only) == true
+	refs.sel_orbit_only.state = S.sel_orbit_only == true
 	
 	refs.mode_comms.state = (S.mode or "comms") == "comms"
 	refs.mode_platforms.state = S.mode == "platforms"
 	
-	refs.dyn_enable.state = S.dyn or false
+	refs.dyn_enable.state = S.dyn ~= nil
 	local dyn = S.dyn or radars.radar_defaults.dyn
 	refs["dynR"].state = dyn.R
 	refs["dynG"].state = dyn.G
 	
-	if S.mode == "comms" then
-	else
-		--local std = S.read_mode == "std" and S.read or nil
-		--local raw = S.read_mode == "raw" and S.read or nil
-		
-		local raw = S.read_mode == "right"
-		--local raw = S.read_mode == "raw" and S.read or nil
-		
-		refs.pl_mode.state = raw and "right" or "left"
-		refs.pl_readStd.state = not raw
-		refs.pl_readRaw.state = raw
-		
-		if not raw then
-			for k,v in pairs(radars.radar_defaults.pl_std) do
-				refs["pl_read"..k.."R"].state = v.R
-				refs["pl_read"..k.."G"].state = v.G
-			end
-		else
-			for k,v in pairs(radars.radar_defaults.pl_raw) do
-				refs["pl_readRaw"..k.."R"].state = v.R
-				refs["pl_readRaw"..k.."G"].state = v.G
-			end
-		end
+	-- comms mode
+	
+	-- platforms mode
+	local read_mode = S.read_mode or "std"
+	refs.pl_mode.switch_state = read_mode == "raw" and "right" or "left"
+	--refs.pl_readStd.state = not raw
+	--refs.pl_readRaw.state = raw
+	
+	for k,v in pairs(read_mode=="std" and S.read or radars.radar_defaults.std) do
+		refs["pl_std"..k.."R"].state = v.R
+		refs["pl_std"..k.."G"].state = v.G
+	end
+	for k,v in pairs(read_mode=="raw" and S.read or radars.radar_defaults.raw) do
+		refs["pl_raw"..k.."R"].state = v.R
+		refs["pl_raw"..k.."G"].state = v.G
 	end
 	
-	gui_update_vis_en(gui, refs)
-	
-	-- radar_gui_update_platforms can reset selected_platform
-	-- this causes a radar refresh every time the gui is opened, which is probably a good idea anywy
-	radars.refresh_radar(data)
+	gui_update_vis_en(gui)
 end
 
--- global
+-- global function because of circular dep
 function refresh_all_guis()
 	for _, gui in pairs(storage.open_guis) do
 		--if gui.planet and gui.planet.prototype == planet and gui.data.S..state then
@@ -173,17 +180,27 @@ function refresh_all_guis()
 	end
 end
 
--- update data from ui
-script.on_event(defines.events.on_gui_checked_state_changed, function(event)
-	--game.print("on_gui_checked_state_changed: ".. serpent.block(event))
+-- update data from ui (gui -> data + changes gui too)
+---@param event any
+local function gui_state_changed(event)
 	local gui = storage.open_guis[event.player_index]
 	if not gui then return end
+	game.print("gui_state_changed: ".. serpent.block(event))
 	local refs = gui.refs
+	local data = gui.data
+	assert(data.entity and data.entity.valid)
 	
-	local mode = update_radiobutton(refs, MODES, event.element.name)
+	-- rebuild settings here to minimize it to what is actually needed depending on mode
+	-- full state of hidden panes is still kept in ui elements until gui is closed
+	-- minizing should probably be in refresh_radar, but it's convenient here and avoids some data/ui desyncs
+	local S = {}
+	S.selected_platform = data.S.selected_platform -- take previous selection instead of pulling from ui list just before we update it
 	
-	local S = { mode=mode }
-	if mode == "comms" then
+	data.S = S
+	
+	S.mode = update_radiobutton(refs, MODES, event.element.name)
+	
+	if S.mode == "comms" then
 		--S.selected_channel = gui.drop_down_channels[gui.refs.ch_drop_down.selected_index]
 		--
 		--local ch = storage.channels.map[S.selected_channel]
@@ -191,40 +208,7 @@ script.on_event(defines.events.on_gui_checked_state_changed, function(event)
 		--	ch.is_interplanetary = refs.ch_interplanetary.state
 		--	radar_channels.update_is_interplanetary(ch.id)
 		--end
-	else
-		S.sel_orbit_only = (gui.planet and refs.sel_orbit_only.state) == true
-		S.dyn = refs.dyn_enable.state and { R=refs.dynR.state, G=refs.dynG.state } or nil
 		
-		--local read_mode = update_radiobutton(refs, READ_MODES, event.element.name)
-		--
-		--local prefix = read_mode == "std" and "pl_read" or "pl_readRaw"
-		--local read = {}
-		--for k,_ in pairs(radars.radar_defaults[prefix]) do ---@diagnostic disable-line
-		--	read[k] = { R=refs[prefix..k.."R"].state,
-		--	            G=refs[prefix..k.."G"].state }
-		--end
-		--S.read_mode = read_mode
-		--S.read = read
-	end
-	
-	gui.data.S = S
-	
-	gui_update_vis_en(gui, refs)
-	gui_update_platform_list(gui, gui.data)
-	
-	radars.refresh_radar(gui.data)
-end)
-script.on_event(defines.events.on_gui_selection_state_changed, function(event)
-	--game.print("on_gui_selection_state_changed: ".. serpent.block(event))
-	local gui = storage.open_guis[event.player_index]
-	if not gui then return end
-	local data = gui.data
-	
-	if event.element.name == "sel_list" then
-		data.S.selected_platform = gui.sel_items[gui.refs.sel_list.selected_index]
-		
-		radar2gui(gui, data)
-	elseif event.element.name == "ch_drop_down" then
 		--data.S.selected_channel = gui.drop_down_channels[event.element.selected_index]
 		--
 		--if data.S.selected_channel == -1 then
@@ -232,14 +216,61 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		--end
 		--
 		--radar_gui_update_channels(gui, data)
+	else
+		S.sel_orbit_only = refs.sel_orbit_only.state == true
+		
+		S.dyn = refs.dyn_enable.state and { R=refs.dynR.state, G=refs.dynG.state } or nil
+		
+		local raw = refs.pl_mode.switch_state == "right"
+		--local read_mode = update_radiobutton(refs, READ_MODES, event.element.name)
+		
+		S.read_mode = raw and "raw" or "std"
+		local ui_prefix = "pl_"..S.read_mode
+		local read = {}
+		for k,_ in pairs(radars.radar_defaults[S.read_mode]) do ---@diagnostic disable-line
+			read[k] = { R=refs[ui_prefix..k.."R"].state,
+			            G=refs[ui_prefix..k.."G"].state }
+		end
+		S.read = read
+		
+		-- mode or sel_orbit_only could have changed
+		gui_update_platform_list(gui, data) -- do last, so settings are fully rebuilt
+	end
+	
+	gui_update_vis_en(gui)
+	
+	radars.refresh_radar(data)
+end
+script.on_event({
+	defines.events.on_gui_checked_state_changed,
+	defines.events.on_gui_switch_state_changed,
+}, gui_state_changed)
+
+script.on_event(defines.events.on_gui_selection_state_changed, function(event)
+	local gui = storage.open_guis[event.player_index]
+	if not gui then return end
+	game.print("gui_sel_changed: ".. serpent.block(event))
+	local data = gui.data
+	assert(data.entity and data.entity.valid)
+	
+	if data.S.mode == "comms" then
+		
+	else
+		data.S.selected_platform = gui.sel_items[event.element.selected_index]
+		gui_update_platform_list(gui, data) -- update list so that fake entries disappear
 	end
 	
 	radars.refresh_radar(data, true)
 end)
+
 script.on_event(defines.events.on_gui_click, function(event)
 	local gui = storage.open_guis[event.player_index]
 	if not gui then return end
 	--game.print("on_gui_click: ".. serpent.block(event))
+	local refs = gui.refs
+	local data = gui.data
+	assert(data.entity and data.entity.valid)
+	
 	if event.element.name == "hexcoder_radar_uplink-window_close_button" then
 		M.force_close_gui(event.player_index)
 	elseif event.element.name == "ch_delete" then
@@ -253,16 +284,19 @@ script.on_event(defines.events.on_gui_click, function(event)
 		--radar_gui_update_channels(gui, data)
 	end
 end)
+-- TODO: does text box .text actually change on confirmed,
+-- or will we see mid-typing string if the gui updates outside of gui events like a radar switching channel?
 script.on_event(defines.events.on_gui_confirmed, function(event)
 	local gui = storage.open_guis[event.player_index]
 	if not gui then return end
 	local refs = gui.refs
 	local data = gui.data
+	assert(data.entity and data.entity.valid)
 	
 	--game.print("on_gui_confirmed: ".. serpent.block(event))
 	if event.element.name == "dyn_text" then
 		data.S.dyn_text = refs.dyn_text.text
-		radars.refresh_radar(gui.data, true)
+		radars.refresh_radar(data, true)
 	elseif event.element.name == "ch_name" then
 		
 		--local ch = storage.channels.map[data.S.selected]
@@ -357,15 +391,15 @@ local function get_window_def()
 				right_label_caption="Raw", right_label_tooltip="Raw read mode (Interplanetary reads possible)"},
 		},
 		gui_vflow{name="pl_std"}:add{
-			circuit_enable("pl_readSta", "Read status",               status_desc,tick2),
-			circuit_enable("pl_readReq", "Read unfulfilled requests", unful_req_desc,tick2),
+			circuit_enable("pl_stdSta", "Read status",               status_desc,tick2),
+			circuit_enable("pl_stdReq", "Read unfulfilled requests", unful_req_desc,tick2),
 		},
 		gui_vflow{name="pl_raw"}:add{
-			circuit_enable("pl_readRawSta", "Read status",               status_desc,tick2),
-			circuit_enable("pl_readRawReq", "Read requests",             req_desc,tick2),
-			circuit_enable("pl_readRawOtw", "Read on the way",           otw_desc,tick2),
-			circuit_enable("pl_readRawInv", "Read inventory",            inv_desc,tick2),
-			circuit_enable("pl_readRawInvSlots", "Read inventory slots", inv_slots_desc,tick2),
+			circuit_enable("pl_rawSta", "Read status",               status_desc,tick2),
+			circuit_enable("pl_rawReq", "Read requests",             req_desc,tick2),
+			circuit_enable("pl_rawOtw", "Read on the way",           otw_desc,tick2),
+			circuit_enable("pl_rawInv", "Read inventory",            inv_desc,tick2),
+			circuit_enable("pl_rawInvSlots", "Read inventory slots", inv_slots_desc,tick2),
 		}
 	}
 	--READ_MODES = {
@@ -397,16 +431,21 @@ local window_def = get_window_def()
 ---@param entity LuaEntity
 ---@return LuaGuiElement
 local function create_radar_gui(player_index, player, entity)
+	assert(entity and entity.valid)
+	
 	M.force_close_gui(player_index)
 	
 	local window, refs = window_def:add_to(player.gui.screen)
 	window.force_auto_center()
 	
 	local data = radars.init_radar(entity)
-	local gui = { refs=refs, data=data, planet=entity.surface.planet }
+	local gui = { refs=refs, data=data }
 	storage.open_guis[player_index] = gui
 	
 	radar2gui(gui, data)
+	
+	-- a refresh every time the gui is opened is a good idea
+	radars.refresh_radar(data)
 	
 	return window
 end
