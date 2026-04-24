@@ -89,3 +89,49 @@ pc.name = mod_name.."pc"
 make_phantom(pc)
 
 data:extend({cc, dc, ac, pc})
+
+--[[
+local pulsegen_cc = util.table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
+pulsegen_cc.name = mod_name.."pulsegen_cc"
+-- this is used by pushbutton (and was added to the API for it!?)
+-- unfortunately is does not actually work for scripts to generated pulses via LuaConstantCombinatorControlBehavior.enabled = true
+pulsegen_cc.pulse_duration = 1
+make_phantom(pulsegen_cc)
+
+data:extend({pulsegen_cc})
+]]
+
+--[[ -- CC-like thing on the radar that can serve as a second circuit connection for dynamic selection
+local function make_sel_module(thing)
+	thing.flags = {"not-on-map",
+		"not-rotatable", "not-flammable", "not-repairable",
+		"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
+		"not-in-kill-statistics", "not-in-made-in",
+		"no-automated-item-removal", "no-automated-item-insertion"
+	}
+	
+	thing.hidden = true
+	thing.minable = {minable=false, mining_time=999999}
+	thing.corpse = nil
+	thing.dying_explosion = nil
+	thing.collision_box = nil
+	thing.collision_mask = { layers = {} }
+	thing.damaged_trigger_effect = nil
+	thing.fast_replaceable_group = nil
+	thing.open_sound = nil
+	thing.close_sound = nil
+	thing.impact_category = nil
+	thing.snap_to_grid = false
+	
+	thing.render_layer = "higher-object-under"
+	thing.integration_patch_render_layer = "higher-object-under"
+	thing.secondary_draw_order = 255
+	thing.selection_priority = 100
+end
+
+local sel_module = util.table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
+sel_module.name = mod_name.."sel_module"
+make_sel_module(sel_module)
+
+data:extend({sel_module})
+]]

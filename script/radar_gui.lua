@@ -1,7 +1,7 @@
 ---@class OpenGui
 ---@field refs GuiRefs
 ---@field data RadarData Holds reference to data in storage for opened radar, or independent data if opening gui on ghost entity (created from tags)
----@field sel_items LuaSpacePlatform[]|nil
+---@field sel_items PlatformData[]|nil
 
 local radars = require("script.radars")
 local radar_channels = require("script.radar_channels")
@@ -9,7 +9,7 @@ require("script.myutil")
 
 local M = {}
 
-local MODES
+local UI_MODES
 
 --[[
 ---@param gui OpenGui
@@ -64,15 +64,17 @@ local function gui_update_platform_list(gui, data)
 	local sel = data.S.selected_platform
 	
 	for _, plat in pairs(list) do
-		local pl = plat.entity
+		local pl = plat.platform
 		if pl and pl.valid then -- platforms in list should not be invalid, but check anyway
+			plat.name = pl.name -- no rename event so do this here?
+			
 			local suffix = ""
 			if pl.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000](Scheduled for deletion)[/color]" end
 			
 			gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color]%s%s", pl.index, pl.name, suffix)
-			gui_items[idx] = pl
+			gui_items[idx] = plat
 			
-			if sel == pl then
+			if sel == plat then
 				sel_idx = idx
 			end
 			idx = idx + 1
@@ -85,14 +87,15 @@ local function gui_update_platform_list(gui, data)
 		else
 			-- add fake entry at the end to show what was selected despite not showing in ui, as the selection stays
 			sel_idx = idx
+			local pl = sel.platform
 			gui_items[idx] = sel
-			if sel.valid then
+			if pl.valid then
 				-- Not in list because not in orbit
-				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not in orbit)[/color]", sel.index, sel.name)
+				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not in orbit)[/color]", pl.index, pl.name)
 			else
 				-- Not in list because it must have been deleted, don't silently pretend nothing was selected!
 				-- index not safe to read if not valid? despite the fact that it is unique and likely still there?
-				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small] ?    [/font][/color] [color=#b0b0b0](Deleted platform)[/color]")
+				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small] ?    [/font][/color] [color=#b0b0b0]%s (Deleted platform)[/color]", pl.name)
 			end
 		end
 	end
@@ -107,7 +110,7 @@ end
 local function gui_update_vis_en(gui)
 	local refs = gui.refs
 	
-	local mode = update_radiobutton(refs, MODES)
+	local mode = update_radiobuttons(refs, UI_MODES)
 	
 	local dyn = refs.dyn_enable.state
 	refs.dynR.enabled = dyn
@@ -122,9 +125,10 @@ local function gui_update_vis_en(gui)
 	
 	if mode == "comms" then
 	else
-		local raw = refs.pl_mode.switch_state == "right"
-		refs.pl_std.visible = not raw
-		refs.pl_raw.visible = raw
+		--local mode = update_radiobuttons(refs, UI_READ_MODES)
+		local read_mode = refs.pl_mode.switch_state == "left" and "std" or "raw"
+		refs.pl_std.visible = read_mode == "std"
+		refs.pl_raw.visible = read_mode == "raw"
 	end
 end
 
@@ -138,13 +142,12 @@ local function radar2gui(gui, data)
 	local refs = gui.refs
 	local S = data.S
 	
-	refs.mode_comms.state = (S.mode or "comms") == "comms"
-	refs.mode_platforms.state = S.mode == "platforms"
+	update_radiobuttons(refs, UI_MODES, S.mode or "comms")
 	
 	refs.dyn_enable.state = S.dyn ~= nil
-	local dyn = S.dyn or radars.radar_defaults.dyn
+	local dyn = S.dyn or radars.defaults.dyn
 	refs.dynR.state = dyn.R
-	refs.dynG.state = dyn.G
+	refs.dynG.state = not dyn.R
 	refs.dyn_text.text = S.dyn_text or ""
 	
 	-- comms mode
@@ -153,17 +156,19 @@ local function radar2gui(gui, data)
 	if S.sel_orbit_only ~= nil then
 		refs.sel_orbit_only.switch_state = S.sel_orbit_only and "right" or "left"
 	else
-		refs.sel_orbit_only.switch_state = radars.radar_defaults.sel_orbit_only and "right" or "left"
+		refs.sel_orbit_only.switch_state = radars.defaults.sel_orbit_only and "right" or "left"
 	end
 	
 	local read_mode = S.read_mode or "std"
-	refs.pl_mode.switch_state = read_mode == "raw" and "right" or "left"
+	--update_radiobuttons(refs, UI_READ_MODES, read_mode)
+	refs.pl_mode.switch_state = read_mode == "std" and "left" or "right"
 	
-	for k,v in pairs(read_mode=="std" and S.read or radars.radar_defaults.std) do
+	-- Set all gui elements to default state so switching modes is easy
+	for k,v in pairs(read_mode=="std" and S.read or radars.defaults.std) do
 		refs["pl_std"..k.."R"].state = v.R
 		refs["pl_std"..k.."G"].state = v.G
 	end
-	for k,v in pairs(read_mode=="raw" and S.read or radars.radar_defaults.raw) do
+	for k,v in pairs(read_mode=="raw" and S.read or radars.defaults.raw) do
 		refs["pl_raw"..k.."R"].state = v.R
 		refs["pl_raw"..k.."G"].state = v.G
 	end
@@ -204,12 +209,13 @@ local function gui_state_changed(event)
 	-- minizing should probably be in refresh_radar, but it's convenient here and avoids some data/ui desyncs
 	local S = {}
 	S.selected_platform = data.S.selected_platform -- take previous selection instead of pulling from ui list just before we update it
-	data.sel_sig = nil -- remove alert signal
-	
 	data.S = S
 	
-	S.mode = update_radiobutton(refs, MODES, event.element.name)
+	S.mode = update_radiobuttons(refs, UI_MODES, event.element)
 	
+	--S.dyn = refs.dyn_enable.state and { R=refs.dynR.state, G=refs.dynG.state } or nil
+	if event.element.name == "dynR" then refs.dynG.state = false end
+	if event.element.name == "dynG" then refs.dynR.state = false end
 	S.dyn = refs.dyn_enable.state and { R=refs.dynR.state, G=refs.dynG.state } or nil
 	
 	if S.mode == "comms" then
@@ -229,19 +235,16 @@ local function gui_state_changed(event)
 		--
 		--radar_gui_update_channels(gui, data)
 	else
-		if refs.dyn_enable.state then
+		if S.dyn then
 			S.sel_orbit_only = refs.sel_orbit_only.switch_state == "right"
-		else
-			S.sel_orbit_only = nil
 		end
 		
-		local raw = refs.pl_mode.switch_state == "right"
-		--local read_mode = update_radiobutton(refs, READ_MODES, event.element.name)
+		--S.read_mode = update_radiobuttons(refs, UI_READ_MODES, event.element)
+		S.read_mode = refs.pl_mode.switch_state == "left" and "std" or "raw"
 		
-		S.read_mode = raw and "raw" or "std"
 		local ui_prefix = "pl_"..S.read_mode
 		local read = {}
-		for k,_ in pairs(radars.radar_defaults[S.read_mode]) do ---@diagnostic disable-line
+		for k,_ in pairs(radars.defaults[S.read_mode]) do ---@diagnostic disable-line
 			read[k] = { R=refs[ui_prefix..k.."R"].state,
 			            G=refs[ui_prefix..k.."G"].state }
 		end
@@ -253,6 +256,7 @@ local function gui_state_changed(event)
 	
 	gui_update_vis_en(gui)
 	
+	data.idx_sig = nil -- ui selection does not need this
 	radars.refresh_radar(data)
 end
 script.on_event({
@@ -271,11 +275,11 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		
 	else
 		data.S.selected_platform = gui.sel_items[event.element.selected_index]
-		data.sel_sig = nil -- remove alert signal
 		
 		gui_update_platform_list(gui, data) -- update list so that fake entries disappear
 	end
 	
+	data.idx_sig = nil -- ui selection does not need this
 	radars.refresh_radar(data, true)
 end)
 
@@ -300,6 +304,28 @@ script.on_event(defines.events.on_gui_text_changed, function(event)
 	
 	radars.refresh_radar(data, true)
 end)
+script.on_event(defines.events.on_gui_confirmed, function(event)
+	local gui = storage.open_guis[event.player_index]
+	if not gui then return end
+	local refs = gui.refs
+	local data = gui.data
+	assert(data.entity and data.entity.valid)
+	
+	-- reacting to on_gui_text_changed might be cooler
+	----game.print("on_gui_confirmed: ".. serpent.block(event))
+	--if event.element.name == "dyn_text" then
+	--	data.S.dyn_text = refs.dyn_text.text
+	--	radars.refresh_radar(data, true)
+	--elseif event.element.name == "ch_name" then
+	--	
+	--	--local ch = storage.channels.map[data.S.selected]
+	--	--if ch then
+	--	--	ch.name = refs.ch_name.text
+	--	--end
+	--	
+	--	--radar_gui_update_channels(gui, data)
+	--end
+end)
 
 script.on_event(defines.events.on_gui_click, function(event)
 	local gui = storage.open_guis[event.player_index]
@@ -322,29 +348,6 @@ script.on_event(defines.events.on_gui_click, function(event)
 		--radar_gui_update_channels(gui, data)
 	end
 end)
--- TODO: does text box .text actually change on confirmed,
--- or will we see mid-typing string if the gui updates outside of gui events like a radar switching channel?
-script.on_event(defines.events.on_gui_confirmed, function(event)
-	local gui = storage.open_guis[event.player_index]
-	if not gui then return end
-	local refs = gui.refs
-	local data = gui.data
-	assert(data.entity and data.entity.valid)
-	
-	--game.print("on_gui_confirmed: ".. serpent.block(event))
-	if event.element.name == "dyn_text" then
-		data.S.dyn_text = refs.dyn_text.text
-		radars.refresh_radar(data, true)
-	elseif event.element.name == "ch_name" then
-		
-		--local ch = storage.channels.map[data.S.selected]
-		--if ch then
-		--	ch.name = refs.ch_name.text
-		--end
-		
-		--radar_gui_update_channels(gui, data)
-	end
-end)
 
 ---@return GuiDef
 local function get_window_def()
@@ -356,7 +359,6 @@ local function get_window_def()
 	local req_desc = {"tooltip.hexcoder_radar_uplink-read_req"}
 	local otw_desc = {"tooltip.hexcoder_radar_uplink-read_otw"}
 	local inv_desc = {"tooltip.hexcoder_radar_uplink-read_inv"}
-	local inv_slots_desc = {"tooltip.hexcoder_radar_uplink-read_inv_slots"}
 	
 	local tick2 = {"tooltip.hexcoder_radar_uplink-tick2_suffix"}
 	
@@ -376,7 +378,7 @@ local function get_window_def()
 		GUI{type="radiobutton", name="mode_platforms", caption="Platforms", state=false, tooltip=platforms_desc, style={top_margin=3}},
 		GUI{type="empty-widget", style={horizontally_stretchable=true}},
 	}
-	MODES = {
+	UI_MODES = {
 		["mode_comms"]="comms",
 		["mode_platforms"]="platforms",
 	}
@@ -404,9 +406,9 @@ local function get_window_def()
 	--		tooltip="Does this channel connect to all surfaces?\n(Can be disabled in settings)" },
 	--}
 	
+	-- TODO: move to strings.cfg
 	local dyn_text1 = "[virtual-signal=signal-P][font=default-small] select via platform ID[/font]"
 	local dyn_text2 = "[virtual-signal=signal-number-sign][font=default-small] select via list index[/font]"
-	local dyn_text4 = "[font=default-small]filter list by text[/font]"
 	
 	local id_sel_tt = "A positive [virtual-signal=signal-P] signal will select platforms directly by ID\nCan select unlisted platforms\nInvalid IDs will select [None]"
 	local idx_sel_tt = "A positive [virtual-signal=signal-number-sign] signal will select from the list by index\nInvalid indices will select [None]"
@@ -416,15 +418,17 @@ local function get_window_def()
 	
 	local dyn_enable_tt="Auto-select via circuit signal\nThe selection is only kept as long as the signal is held\nSelection is not processed every tick\nPlatform ID [virtual-signal=signal-P] selection has priority over list index [virtual-signal=signal-number-sign]\nHint: Platform IDs [virtual-signal=signal-P] returned by the status read option can be fed back through a combinator to lock a selection to a platform after it was picked by index"
 	local dyn_text_tt="Filter the list via text\nThe text can be contained anywhere in the name\n'*' acts a general wildcard\nLetter codes like '{X}' act as a number from the corresponding signal [virtual-signal=signal-X]"
-
+	
+	local pl_std_tt="Simple request read"
+	local pl_raw_tt="Raw request read (interplanetary reads possible)"
 	
 	local dyn_pane = gui_vflow{name="dyn_pane"}:add{
 		gui_hflow{stlye={bottom_margin=5}}:add{
 			GUI{type="checkbox", name="dyn_enable", caption="Dynamic Select", state=false,
 			    style={base="caption_checkbox"}, tooltip=dyn_enable_tt},
 			GUI{type="empty-widget", style={horizontally_stretchable=true}},
-			GUI{type="checkbox", name="dynR", caption={"gui-network-selector.red-label"}, state=false},
-			GUI{type="checkbox", name="dynG", caption={"gui-network-selector.green-label"}, state=false},
+			GUI{type="radiobutton", name="dynR", caption={"gui-network-selector.red-label"}, state=false},
+			GUI{type="radiobutton", name="dynG", caption={"gui-network-selector.green-label"}, state=false},
 		},
 		
 		gui_hflow{name="dyn_flow1"}:add{
@@ -442,18 +446,16 @@ local function get_window_def()
 					right_label_caption="Orbiting", right_label_tooltip=orbiting_tt},
 		},
 		
-		--GUI{type="empty-widget", style={horizontally_stretchable=true}},
-		--GUI{type="label", caption=dyn_text4},
 		GUI{type="textfield", name="dyn_text", text="", tooltip=dyn_text_tt, style="stretchable_textfield"},
 	}
 	
 	local pl_config = gui_vflow{name="pl_config"}:add{
 		gui_hflow{}:add{
-			GUI{type="label", caption="Platform signals", style={base="caption_label"}},
+			GUI{type="label", caption="Read mode", style={base="caption_label"}},
 			GUI{type="empty-widget", style={horizontally_stretchable=true}},
 			GUI{type="switch", name="pl_mode", switch_state="left", allow_none_state=false,
-				left_label_caption="Standard", left_label_tooltip="Standard read mode",
-				right_label_caption="Raw", right_label_tooltip="Raw read mode (Interplanetary reads possible)"},
+				left_label_caption="Standard", left_label_tooltip=pl_std_tt,
+				right_label_caption="Raw", right_label_tooltip=pl_raw_tt},
 		},
 		gui_vflow{name="pl_std"}:add{
 			circuit_enable("pl_stdSta", "Read status",               status_desc,tick2),
@@ -464,8 +466,11 @@ local function get_window_def()
 			circuit_enable("pl_rawReq", "Read requests",             req_desc,tick2),
 			circuit_enable("pl_rawOtw", "Read on the way",           otw_desc,tick2),
 			circuit_enable("pl_rawInv", "Read inventory",            inv_desc,tick2),
-			circuit_enable("pl_rawInvSlots", "Read inventory slots", inv_slots_desc,tick2),
-		}
+		},
+	}
+	UI_READ_MODES = {
+		["pl_modeStd"]="std",
+		["pl_modeRaw"]="raw",
 	}
 	
 	return gui_default_frame("hexcoder_radar_uplink", "Radar circuit connection", {

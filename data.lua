@@ -29,7 +29,7 @@ data:extend({
 		name = mod_name.."sel-switch-sound1",
 		filename = "__core__/sound/list-box-click.ogg",
 		category = "game-effect",
-		volume = 1.0,
+		volume = 0.8,
 		speed = 0.9
 	},
 	{
@@ -37,7 +37,7 @@ data:extend({
 		name = mod_name.."sel-switch-sound2",
 		filename = "__core__/sound/smart-pipette.ogg",
 		category = "game-effect",
-		volume = 6.0,
+		volume = 4.0,
 		speed = 0.85
 	}
 })

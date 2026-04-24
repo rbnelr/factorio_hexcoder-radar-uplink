@@ -1,3 +1,32 @@
+--[[
+TODO: rework!
+-> Use alphbethic sorting, seems wrong with rich text as possibility, but game also gets the order 'wrong' with richt text in train station names
+
+-> using signals as channels seems like an iteresting idea, especially with signal buttons in gui
+ -> but probably clashes with my existing gui, and can probably be emulated with name wildcards
+ 
+channel create can be button, fake option in list, or just typing into name field
+channel delete can be button, or simply when no radar references it any more
+-> dynamic selection can do more cool stuff if wildcard-selection can actually create channels by itself
+-> allow {"anything"} signal to insert rich text into name, allow {X} to insert number
+-> this could be very cool for LTN-style stuff but via circuits
+-> literally if your train stops have unique names (which you sadly have to set manually)
+   and the radar knows the name to use as a channel name, train stations can request items via the radar channel
+   a central provider can iterate channels with requests, request those items via req chests, load them into trains, until they are full
+   then send the destination stop via circuit and launch it via interrupt, might require a memory cell of train contents while on the way to avoid sending duplicates
+   -> train interrupts can already do some (maybe all) of this, but it's cool!
+ -> Once I have implemented this, demonstrate this via wall repair supply!
+
+unsure how channels should work
+ -> want to only show channels that can actually be connected to based on restriction
+    want to add power draw when connecting across space, and want relay sats
+    but relay sats would feel weird if they always need 2 radars (1 to connect to ground/or previous relay, 1 to connect to other relay)
+     -> make hub itself do it? maybe that's less cool?
+    actually -> connect radars to surface hub, then connect hubs according to rules
+     but this means there's now not a single link radar that can get the power draw, we could add a "relay" checkbox, and you just need 1?
+
+]]
+
 ---@class Channels
 ---@field next_id channel_id
 ---@field map table<channel_id, Channel>
@@ -16,6 +45,7 @@
 ---@field link_hub LuaEntity
 
 local W = defines.wire_connector_id
+-- Hidden wire between radars, can't visualize well using wire_origin.player, because it breaks player wires on disconnect_all(HIDDEN)
 local HIDDEN = defines.wire_origin.script
 
 local M = {}

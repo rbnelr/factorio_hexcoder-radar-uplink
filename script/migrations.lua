@@ -10,18 +10,23 @@ local M = {}
 
 -- First attempt at adding migrations
 function M.migrate_less0_1_4()
+	---@class oldRadarData
+	---@field S oldRadarSettings
+	
+	---@class oldRadarSettings
+	---@field mode "comms"|"platforms"
+	---@field sel_orbit_only? boolean
+	---@field selected_channel? channel_id
+	---@field selected_platform? PlatformData|LuaSpacePlatform|platform_index
+	---@field dyn? CircRG
+	---@field dyn_text? string
+	---@field read_mode? "std"|"raw"
+	---@field read? ReadStd|ReadRaw
+
 	local channels = util.table.deepcopy(storage.channels or {}) -- deepcopy just to be safe
-	local old_radars = util.table.deepcopy(storage.radars or {})
+	local old_radars = util.table.deepcopy(storage.radars or {}) --[[@as table<unit_number, oldRadarData>]]
 	
 	M.reset()
-	
-	local new_platforms = {}
-	for _,force in pairs(game.forces) do
-		new_platforms[force.index] = {}
-		for id,plat in pairs(force.platforms) do
-			new_platforms[force.index][id] = plat
-		end
-	end
 	
 	storage.channels.next_id = channels.next_id or 1
 	for id,ch in pairs(channels.map) do
@@ -31,7 +36,7 @@ function M.migrate_less0_1_4()
 	end
 	for id,data in pairs(storage.radars) do
 		local old_data = old_radars[id]
-		if old_data and old_data.entity and old_data.entity.valid and old_data.entity.unit_number and old_data.S then
+		if old_data and old_data.S then
 			local S = {}
 			S.mode = old_data.S.mode == "platforms" and "platforms" or "comms"
 			
@@ -40,19 +45,21 @@ function M.migrate_less0_1_4()
 			S.dyn_text = old_data.S.dyn_text
 			
 			if old_data.S.mode == "platforms" then
-				S.read_mode = old_data.S.read_mode == "raw" and "raw" or "std"
+				S.read_mode = old_data.S.read_mode or "std"
 				S.read = {}
-				for k,_ in pairs(radars.radar_defaults[S.read_mode]) do ---@diagnostic disable-line
+				for k,_ in pairs(radars.defaults[S.read_mode]) do ---@diagnostic disable-line
 					S.read[k] = old_data.S.read and old_data.S.read[k] or { false, false } -- copy setting or false to avoid affecting existing circuits
 				end
 				
 				S.selected_platform = nil
 				
 				local sel = old_data.S.selected_platform
-				if sel and sel.object_name == "LuaSpacePlatform" then
+				if sel and sel.object_name == "table" then
 					S.selected_platform = sel
+				--elseif sel and sel.object_name == "LuaSpacePlatform" then -- only in dev: was never released
+				--	S.selected_platform = storage.platforms:init_platform(sel)
 				elseif type(sel) == "number" then
-					S.selected_platform = new_platforms[data.entity.force.index][sel]
+					S.selected_platform = storage.platforms:init_platform(game.forces.player.platforms[sel])
 				end
 			else
 				S.selected_channel = 0

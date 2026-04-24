@@ -122,31 +122,38 @@ function gui_vflow(args)
 	return GUI{type="flow", name=args.name, direction="vertical", style=args.style}
 end
 
--- update radiobutton state on click 
----@generic Mode : string
+-- handle group of radiobuttons
+---@generic Mode : string|integer
 ---@param refs GuiRefs
----@param modes table<string, Mode> gui element name to mode name
----@param clicked_element? string gui element name that was clicked (can be related) or nil
----@return Mode selected the mode that still is or was just selected, defaults to the first 
-function update_radiobutton(refs, modes, clicked_element)
-	local clicked_mode = modes[clicked_element] -- clicked radio button -> set mode
-	if clicked_mode then
-		for k,m in pairs(modes) do
-			refs[k].state = clicked_mode == m -- update all radio button states
+---@param modes table<string, Mode> table with radiobutton gui names -> mode values
+-- nil: get mode from gui state
+-- Mode: set gui state from active mode
+-- LuaGuiElement: handle gui element event (radiobutton click), update gui state, return new active mode
+---@param activate? Mode|LuaGuiElement
+---@return Mode active_mode active mode value based on gui state (already active or just clicked), defaults to the first
+function update_radiobuttons(refs, modes, activate)
+	if activate and activate.object_name=="LuaGuiElement" then
+		activate = modes[activate.name] -- clicked radio button -> set mode or nil if clicked unrelated
+	end
+	if activate then
+		for name, mode in pairs(modes) do
+			refs[name].state = mode == activate -- update all radio button states
 		end
-		return clicked_mode
+		return activate
 	else
-		for k,m in pairs(modes) do
-			if refs[k].state then
-				return m
+		-- find active mode from gui
+		for name, mode in pairs(modes) do
+			if refs[name].state then
+				return mode
 			end
 		end
-		--return nil
+		
 		-- default to first
-		for k,m in pairs(modes) do
-			refs[k].state = true
-			return m
-		end
+		local name, mode = next(modes)
+		refs[name].state = true
+		
+		--return nil
+		return mode
 	end
 end
 

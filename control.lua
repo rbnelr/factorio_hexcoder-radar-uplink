@@ -20,21 +20,37 @@ TODO: add enough features for platform read mode to support fully automated mixe
   -> confirm signal sounds sensible for switching read target, but user can just keep sending same platform (but confirm signal might avoid user having to memory cell)
 
 TODO:
+ -> cargo landing pad is exactly the same as platform hub in terms of requests/otw/inv/slots, except for status, which could have planet=4?
+ -> with unlimited reads, could actually include them in list universally,
+    otherwise radars in orbit could have the special entry of "<Current planet> landing pad"?
+
+TODO:
 - implement channel restrictions
  -universal (any surface to surface)
  -planet<->orbit, and any orbit<->orbit (orbital relay at src and dst planets)
  -planet<->orbit, orbit<->nearby orbit (relays in space along entire space connection path)
  -planet<->nearby planet (?)
+ -> also on space_connection -> can connect to orbit at both ends, but power draw could change dynamically based on distance
+ -> actually power draw could be the limiting factor for where we can connect to, which modpacks could use in interesting ways
+ -> like a shattered planet-like trip where you lose connection due to lack of power at some point
  
 TODO:
  -add big power draw when connecting to orbit, or even scale power draw with space connection distance? (customizable)
+  -> would probably require compound entity, though assember can vary power draw with beacons, API might allow assembler entities to have flexible power draw even without actual beacons
+ -allow disabling charting and maybe vision too (charting because of ups cost, and for OCD since we use the radar for other purposes)
+  -> also probably via compound entity
+   one entitiy is the visible one a reskinned assember might be able to correctly show variable power draw in gui and power chart and allow changing the anim speed
+   another is dynamically spawned for charting and for vision
+   if vision can't be disabled make this the normal radar (but modified), so deinstalling the mod keeps radars
+   -> can we actually turn radar into assembler entity and still be type=radar name=radar?
+
 
 TODO: make space age optional?
 TODO: figure out correct dependency versions?
 
 TODO: undo/redo? seems hard
-TODO: blueprint over? hacky workaround but maybe not that hard?
-TODO: copy paste? not really possible to to properly (with visual feedback?); but could fake using key events? not worth it if blueprint over works I think
+TODO: blueprint over? hacky workaround but maybe not that hard? -> possible with lib, but from my understanding performance would be bad if every mod did it
+TODO: copy paste? not really possible to do properly (with visual feedback?); but could fake using key events? not worth it if blueprint over works I think
 --]]
 
 ---@type ModStorage
@@ -77,9 +93,6 @@ script.on_event(defines.events.on_tick, function(event)
 			_did_reset = true
 		end
 	end
-	--storage.poll_power_check:tick(POLL_PERIOD, event.tick, radars.poll_radar)
-	
-	--storage.poll_power_check:tick(POLL_PERIOD, event.tick, radars.poll_radar)
 	
 	storage.poll_dyn_select:stagger_tick(event.tick, SEL_POLL_PERIOD, radars.poll_dyn_select)
 	storage.poll_power_check:stagger_tick(event.tick, POLL_PERIOD, radars.poll_radar)
@@ -243,7 +256,7 @@ function migrations.reset()
 	for _, player in pairs(game.players) do player.opened = nil end
 	
 	for _, s in pairs(game.surfaces) do
-		for _, name in pairs({"cc","dc","ac","pc"}) do
+		for _, name in pairs({"cc","pulsegen_cc","dc","ac","pc"}) do
 			for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-"..name }) do
 				e.destroy()
 			end

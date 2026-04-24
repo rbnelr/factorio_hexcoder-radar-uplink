@@ -11,12 +11,14 @@
 	Raw requests: on_entity_logistic_slot_changed + on_space_platform_changed_state (requests change due to import_from depending on location)
 	On the way: on_rocket_launch_ordered + on_cargo_pod_delivered_cargo
 	Hub Inventory: no events to react to but circuit signals can be implemented via proxy container!
+	Inventory Slots: polling for now, probably can react to cargo bay build and destroy, then just query inventory slots in a single call
 	
 	-> actually on_entity_logistic_slot_changed does not trigger if a section is toggled, so it's not reliable...
 ]]
 
 ---@class PlatformData
----@field entity LuaSpacePlatform
+---@field name string
+---@field platform LuaSpacePlatform -- should already be built but could be scheduled_for_deletion
 ---@field readers table<string, LuaEntity> Hidden combinators to read platform info from radar combinators
 ---@field _prev_loc LuaSpaceConnectionPrototype|LuaSpaceLocationPrototype|nil
 ---@field _prev_progress number?
@@ -54,9 +56,6 @@ local SIG_PLAT_INV_SLOTS         = {type="virtual", name="signal-S", quality="no
 
 local SIG_EACH       = {type="virtual", name="signal-each"} ---@type SignalID
 local SIG_EVERYTHING = {type="virtual", name="signal-everything"} ---@type SignalID
-local SIG_CHECK      = {type="virtual", name="signal-check"} ---@type SignalID
-
-local SIG_INFO_1 = {value={type="virtual", name="signal-info", quality="normal"}, min=1} ---@type LogisticFilter
 
 local ARITH_IDENTITY = { ---@type ArithmeticCombinatorParameters
 	first_signal=SIG_EACH, second_constant=1, operation="*",
@@ -137,25 +136,25 @@ function Platforms:init_platform(platform)
 	
 	local readers = {}
 	readers.stat_cc = combinator("hexcoder_radar_uplink-cc", -3,0, "platform status")
-	readers.loc_cc  = combinator("hexcoder_radar_uplink-cc", -2,0, "platform location")
+	readers.loc_cc  = combinator("hexcoder_radar_uplink-cc", -2,0, "platform location (split from status to support platform to platform check)")
 	readers.req_cc  = combinator("hexcoder_radar_uplink-cc", -1,0, "platform requests at current planet")
 	readers.otw_cc  = combinator("hexcoder_radar_uplink-cc", 0,0, "platform targeted_items_deliver ('on the way' via rocket silo cargo pod)")
 	-- proxy container that automatically reads platform hub iventory without user needing to use "read contents" option
 	readers.inv_pc  = proxy_container("hexcoder_radar_uplink-pc", 1,0)
-	readers.inv_slots_cc  = combinator("hexcoder_radar_uplink-cc", 2,0, "platform inventory slots")
-	readers.build_mats_cc  = combinator("hexcoder_radar_uplink-cc", -1,-1, "(experimental) total construction materials (all ghosts summed up)")
 	
-	readers.stat    = combinator("hexcoder_radar_uplink-ac", -2,1.5, "platform status, delay=1", ARITH_IDENTITY, readers.loc_cc, {readers.stat_cc})
+	readers.stat    = combinator("hexcoder_radar_uplink-ac", -2,1.5, "platform status, delay=1 (Loc + Stat)", ARITH_IDENTITY, readers.loc_cc, {readers.stat_cc})
 	readers.req_raw = combinator("hexcoder_radar_uplink-ac", -1,1.5, "platform requests at current planet, delay=1", ARITH_IDENTITY, readers.req_cc)
 	readers.otw_raw = combinator("hexcoder_radar_uplink-ac", 0,1.5, "platform deliveries on the way, delay=1", ARITH_IDENTITY, readers.otw_cc)
 	readers.inv_raw = combinator("hexcoder_radar_uplink-ac", 1,1.5, "platform hub inventory negated, delay=1", ARITH_IDENTITY, readers.inv_pc)
-	readers.inv_slots_raw = combinator("hexcoder_radar_uplink-ac", 2,1.5, "platform hub inventory slots, delay=1", ARITH_IDENTITY, readers.inv_slots_cc)
-	readers.build_mats_raw = combinator("hexcoder_radar_uplink-ac", -1,-2, "", ARITH_IDENTITY, readers.build_mats_cc)
 	
-	readers.req = combinator("hexcoder_radar_uplink-ac", 2,-2, "unfulfilled platform requests", ARITH_RMINUSG, readers.req_cc, { readers.otw_cc, readers.inv_pc })
+	readers.req = combinator("hexcoder_radar_uplink-ac", 2,-2, "unfulfilled platform requests (Req - (Otw+Inv))", ARITH_RMINUSG, readers.req_cc, { readers.otw_cc, readers.inv_pc })
+	
+	readers.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+		.add_section() -- section 2 for slots
 	
 	data = {
-		entity=platform,
+		name=platform.name,
+		platform=platform,
 		readers=readers,
 	}
 	script.register_on_object_destroyed(platform)
@@ -265,16 +264,17 @@ function Platforms:update_platform_status(plat, data)
 	local stat = {} ---@type LogisticFilter[]
 	
 	-- platform index
-	table.insert(loc, {value=SIG_PLAT_ID, min=plat.index})
+	stat[1] = {value=SIG_PLAT_ID, min=plat.index}
 	
-	-- signal space location that platform is orbiting
+	-- space location: report that platform is orbiting
 	if plat.space_location then
-		table.insert(loc, {value={type="space-location", name=plat.space_location.name, quality="normal"}, min=3})
+		loc[1] = {value={type="space-location", name=plat.space_location.name, quality="normal"}, min=3}
 		data._prev_loc = plat.space_location
 		
 		--storage.polling_platforms[plat.index] = nil -- stop polling if orbiting
-	-- signal space connection platform travelling
-	-- since space connections are not supported as signals, output from/to space locations as signals with 1/2 value
+	
+	-- space connection: report that platform is travelling
+	-- since space connections are not supported as signals, output from/to space locations as signals with 1/2 value like hub in vanilla
 	elseif plat.space_connection then
 		local conn = plat.space_connection ---@cast conn -nil
 		local from = conn.from
@@ -313,15 +313,15 @@ function Platforms:update_platform_status(plat, data)
 				progress = 1.0 - progress
 			end
 			
-			table.insert(loc, {value={type="space-location", name=from.name, quality="normal"}, min=1})
-			table.insert(loc, {value={type="space-location", name=  to.name, quality="normal"}, min=2})
+			loc[1] = {value={type="space-location", name=from.name, quality="normal"}, min=1}
+			loc[2] = {value={type="space-location", name=  to.name, quality="normal"}, min=2}
 			
 			if progress then
 				-- distance is in [0,1]
 				local percent = round(progress * 100.0)
 				local dist_km = round(progress * conn.length)
-				table.insert(stat, {value=SIG_PLAT_PROGRESS_PERCENT, min=percent})
-				table.insert(stat, {value=SIG_PLAT_PROGRESS_DISTANCE, min=dist_km})
+				stat[2] = {value=SIG_PLAT_PROGRESS_PERCENT, min=percent}
+				stat[3] = {value=SIG_PLAT_PROGRESS_DISTANCE, min=dist_km}
 			end
 		end
 		
@@ -329,7 +329,7 @@ function Platforms:update_platform_status(plat, data)
 			-- speed is km/tick, abs to as -10km/s falling back counts as reversing for us, but nor for game
 			-- report speed as always positive, whenever start falling back should see to/from reverse
 			speed = round(math.abs(speed) * 60.0)
-			table.insert(stat, {value=SIG_PLAT_SPEED, min=speed})
+			stat[4] = {value=SIG_PLAT_SPEED, min=speed}
 		end
 		
 		-- in transit, update in real time
@@ -347,12 +347,35 @@ end
 
 ---@param plat LuaSpacePlatform
 ---@param data? PlatformData
+function Platforms:update_platform_inv_slots(plat, data)
+	if not plat.valid then return end
+	data = data or self[plat.index]
+	if not data then return end
+	
+	local inv = plat.hub.get_inventory(defines.inventory.hub_main)
+	local slots = inv and #inv or 0
+	
+	local ctrl = data.readers.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	ctrl.sections[2].set_slot(1, {value=SIG_PLAT_INV_SLOTS, min=slots})
+end
+
+---@param plat LuaSpacePlatform
+---@param data? PlatformData
 function Platforms:update_platform_requests_at_planet(plat, data)
 	if not plat.valid then return end
 	data = data or self[plat.index]
 	if not data then return end
 	
-	local signals = {} -- temporary table of signals, could avoid this via LuaLogisticSection.set_slot, but may be slower due to more api calls(?)
+	-- TODO: optimization here should be easy:
+	-- logi.filters can be cached per planet, and only updated on on_entity_logistic_slot_changed and section toggle?
+	-- ughh except any auto-requests changes, did I actually forget those?
+	-- I guess not that easy... but could try taking logistics sections and just assigning to CC.sections, format is the same, but max, import_from and quality comparator are ignored?
+	-- might actually work, but would have to then manually filter for planets, that that might be an API call, table assignment + then iterate and assign nil if planet_from mismatches?
+	-- so yeah, could react to on_entity_logistic_slot_changed and cache everything in one cc with sections split up per planet, don't need to bother deduplicating, then enable/disable sections on platform arrive/leave
+	-- poll slowly for logistic section enable/disable, disable the correct sections for the planet (note that user can swap sections without event!)
+	-- the auto-requests section probably can also just be copied as a table at a certain polling rate, only if enabled and not empty
+	
+	local signals = {}
 	
 	-- disable requests while in transit
 	local enable_requests = plat.space_location
@@ -409,98 +432,9 @@ function Platforms:update_platform_deliveries_on_the_way(plat, data)
 	ctrl.sections[1].filters = signals -- could avoid
 end
 
----@param plat LuaSpacePlatform
----@param data? PlatformData
-function Platforms:update_platform_inv_slots(plat, data)
-	if not plat.valid then return end
-	data = data or self[plat.index]
-	if not data then return end
-	
-	local inv = plat.hub.get_inventory(defines.inventory.hub_main)
-	local slots = inv and #inv or 0
-	
-	local ctrl = data.readers.inv_slots_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
-	ctrl.sections[1].set_slot(1, {value=SIG_PLAT_INV_SLOTS, min=slots})
-end
-
----@param plat LuaSpacePlatform
----@param data? PlatformData
-function Platforms:update_platform_total_construction_mats(plat, data)
-	if not plat.valid then return end
-	data = data or self[plat.index]
-	if not data then return end
-	
-	local Q0 = "normal"
-	--for prototypes.quality
-	
-	local surf = plat.surface
-	--local tiles = surf.count_tiles_filtered{has_tile_ghost=true}
-	--local missing_tiles2 = surf.find_entities_filtered{type="tile-ghost", name="tile-ghost", ghost_type="tile"}
-	--local missing_tiles = surf.count_entities_filtered{type="tile-ghost", ghost_type="tile", ghost_name="space-platform-foundation"}
-	local missing_tiles = surf.count_entities_filtered{type="tile-ghost"} -- space-platform-foundation not found despite being returned when not filtering?
-	
-	local normal = {}
-	local counts = { [Q0]=normal }
-	
-	local ghosts = surf.find_entities_filtered{type="entity-ghost", quality={quality=Q0, comparator="="}}
-	for i=1,#ghosts do local g = ghosts[i]
-		local t = normal[g.ghost_type] or {}
-		local c = t[g.ghost_name] or 0
-		t[g.ghost_name] = c + 1
-		normal[g.ghost_type] = t
-	end
-	
-	local ghosts = surf.find_entities_filtered{type="entity-ghost", quality={quality=Q0, comparator=">"}}
-	for i=1,#ghosts do local g = ghosts[i]
-		local q = counts[g.quality]
-		if not q then q = {}; counts[g.quality] = q end
-		local t = q[g.ghost_type] or {}
-		local c = t[g.ghost_name] or 0
-		t[g.ghost_name] = c + 1
-		q[g.ghost_type] = t
-	end
-	
-	local items = surf.find_entities_filtered{type="item-request-proxy"}
-	for i=1,#items do local item = items[i]
-		
-	end
-	
-	--local item_inside = surf.find_entities_filtered{type="entity-ghost", has_item_inside=true}
-	
-	
-	local signals = {}
-	
-	for quality,quality_list in pairs(counts) do
-		for type,type_list in pairs(quality_list) do
-			for name,count in pairs(type_list) do
-				-- technically we need to do this?
-				--prototypes.entity[name].items_to_place_this[1].
-				table.insert(signals, {
-					-- is type irrelevant?
-					value = { type="item", name=name, quality=quality },
-					min = count
-				})
-			end
-		end
-	end
-	
-	if missing_tiles > 0 then
-		table.insert(signals, {
-			-- is type irrelevant?
-			value = { type="item", name="space-platform-foundation", quality=Q0 },
-			min = missing_tiles
-		})
-	end
-	
-	local ctrl = data.readers.build_mats_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
-	ctrl.sections[1].filters = signals
-	
-	--game.print("update_platform_total_construction_mats: "..serpent.block({ missing_tiles, counts }))
-end
-
 ---@param data PlatformData
 function Platforms:poll_platform(data)
-	local plat = data.entity
+	local plat = data.platform
 	if not plat.valid then return end
 	
 	if plat.space_location then
@@ -511,14 +445,11 @@ function Platforms:poll_platform(data)
 	
 	-- update via polling for now, could probabably also react to hub and cargo bay build and destroy events?
 	self:update_platform_inv_slots(plat, data)
-	
-	if plat.index == 28 then
-		self:update_platform_total_construction_mats(plat, data)
-	end
 end
 
 -- this does not seem to get called when a platform gets deleted
 -- so I may have to add .valid checks to all platforms as on_object_destroyed is unreliable
+-- TODO: 
 script.on_event(defines.events.on_space_platform_changed_state, function(event)
 	--local names = {
 	--	[defines.space_platform_state.waiting_for_starter_pack] = "waiting_for_starter_pack",
