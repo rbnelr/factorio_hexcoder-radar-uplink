@@ -15,16 +15,23 @@
 -- it could be annoying if it's something to filter out, but the alternative might be filtering out all status signals if you want it on a single wire
 -- could just remove it and require users checking status, or make it customizable, maybe a no-info signals is more useful anyway?
 
----@class RadarData
+---@class (exact) RadarData
 ---@field id unit_number
 ---@field entity LuaEntity
 ---@field status defines.entity_status Last status for power check
----@field idx_sig? integer if selected by list index via dynamic selection, keep outputting index for convenience
+---@field sel_idx? integer if selected by list index, keep outputting index for iteration setups with dynamic selection
 ---@field S RadarSettings
--- Hidden combinators that connect to platform readers, store red input wire directly for efficiency, entity is .owner
----@field dcsR? table<string, LuaWireConnector>
----@field dcStatCtrl? LuaDeciderCombinatorControlBehavior
----@field ccPulse? LuaConstantCombinatorControlBehavior
+-- Hidden combinators that connect to platform CCs, store red input wire directly for efficiency, entity is .owner
+---@field hidden_circ? table<string, LuaEntity>
+---@field ccPulseSec1? LuaLogisticSection
+---@field ccPulseSec2? LuaLogisticSection
+---@field dcCheckR? LuaWireConnector
+---@field delayStatR?  LuaWireConnector
+---@field delayStatG?  LuaWireConnector
+---@field delayReqR?   LuaWireConnector
+---@field delayReqG?   LuaWireConnector
+---@field delayOtwR?   LuaWireConnector
+---@field delayInvR?   LuaWireConnector
 
 -- TODO: sel_orbit_only only makes sense when in dynamic selection mode
 -- otherwise it does nothing except act as a filter in the gui
@@ -34,12 +41,12 @@
 -- Actually -> even in dyn mode, ID selection should just be universal anyway, as failing to select
 
 -- TODO: remove Settings and merge using ---@class RadarData : RadarSettings? use strict to luals checks everything?
----@class RadarSettings
+---@class (exact) RadarSettings
 ---@field mode "comms"|"platforms" Operation mode, comms for vanilla global channel or named channels, platforms for platform reading
 ---@field sel_orbit_only? boolean Fiter platform list to just platforms in orbit? (Also affects selection by index)
 ---@field selected_channel? channel_id
 ---@field selected_platform? PlatformData Selected platform
----@field dyn? CircRG
+---@field dyn? "circuit_red"|"circuit_green" -- probably not safe to put defines in storage
 ---@field dyn_text? string
 ---@field read_mode? "std"|"raw"
 ---@field read? ReadStd|ReadRaw
@@ -51,41 +58,37 @@ local STATUS_WORKING = defines.entity_status.working
 local W = defines.wire_connector_id
 local netR = {red=true, green=false}
 local netG = {red=false, green=true}
-local circR = W.circuit_red
-local circG = W.circuit_green
-local inR = W.combinator_input_red
-local inG = W.combinator_input_green
-local outR = W.combinator_output_red
-local outG = W.combinator_output_green
+local W_circR = W.circuit_red
+local W_circG = W.circuit_green
+local W_inR = W.combinator_input_red
+local W_inG = W.combinator_input_green
+local W_outR = W.combinator_output_red
+local W_outG = W.combinator_output_green
 
-local SIG_EACH = {type="virtual", name="signal-each"} ---@type SignalID
-local SIG_ANYTHING = {type="virtual", name="signal-anything"} ---@type SignalID
-local SIG_EVERYTHING = {type="virtual", name="signal-everything"} ---@type SignalID
-local SIG_INFO = {type="virtual", name="signal-info"} ---@type SignalID
-local SIG_PLAT_ID = {type="virtual", name="signal-P"} ---@type SignalID
-local SIG_LIST_IDX = {type="virtual", name="signal-number-sign"} ---@type SignalID
-local SIG_SWITCH_PULSE = { ---@type LogisticFilter
-	value={type="virtual", name="signal-rightwards-leftwards-arrow", quality="normal"},
-	min=1
+local SIG_EVERYTHING   = {type="virtual", name="signal-everything"} ---@type SignalID
+local SIG_EACH         = {type="virtual", name="signal-each"} ---@type SignalID
+local SIG_ANYTHING     = {type="virtual", name="signal-anything"} ---@type SignalID
+local SIG_INFO         = {type="virtual", name="signal-info"} ---@type SignalID
+local SIG_PLAT_ID      = {type="virtual", name="signal-P"} ---@type SignalID
+local SIG_LIST_IDX     = {type="virtual", name="signal-number-sign"} ---@type SignalID
+local SIG_INTERNAL1    = {type="virtual", name="signal-exclamation-mark"} ---@type SignalID
+local SIG_SWITCH_PULSE = {type="virtual", name="signal-rightwards-leftwards-arrow"} ---@type SignalID
+local SIG_ORBIT_ID     = {type="virtual", name="signal-O"} ---@type SignalID
+
+local SIG_INTERNAL1F = { value={type="virtual", name=SIG_INTERNAL1.name, quality="normal"}, min=1 } ---@type LogisticFilter
+local SIG_LIST_IDXF  = { value={type="virtual", name=SIG_LIST_IDX.name, quality="normal"}, min=0 } ---@type LogisticFilter
+
+local ARITH_DELAY = { ---@type ArithmeticCombinatorParameters
+	first_signal=SIG_EACH, second_constant=0, operation="+",
+	output_signal=SIG_EACH
+}
+local ARITH_R_MINUS_G = { ---@type ArithmeticCombinatorParameters
+	first_signal=SIG_EACH, second_signal=SIG_EACH, operation="-",
+	first_signal_networks=netR, second_signal_networks=netG,
+	output_signal=SIG_EACH
 }
 
------@type DeciderCombinatorParameters
---local EACH_AND_INFO = {conditions={
---	-- !=0 => pass everything
---	{first_signal=SIG_EACH, comparator="!=", constant=0, first_signal_networks=netR}
---},outputs={
---	{signal=SIG_EACH, copy_count_from_input=true, networks=netR},
---	{signal=SIG_INFO, copy_count_from_input=true, networks=netG},
---}}
-
------@type DeciderCombinatorParameters
---local EACH_POSITIVE = {conditions={
---	{first_signal=SIG_EACH, comparator=">", constant=0, first_signal_networks=netR}
---},outputs={
---	{signal=SIG_EACH, copy_count_from_input=true, networks=netR}
---}}
-
--- pass along each positive signal from platform (on Red)
+-- pass along each positive signal from platform on R
 -- if check signal (INFO) > 0 (on Green)
 ---@type DeciderCombinatorParameters
 local DATA_DC_PARAMS = {conditions={
@@ -93,6 +96,63 @@ local DATA_DC_PARAMS = {conditions={
 	{first_signal=SIG_INFO, comparator=">", constant=0, first_signal_networks=netG, compare_type="and"}
 },outputs={
 	{signal=SIG_EACH, copy_count_from_input=true, networks=netR}
+}}
+
+-- STAT_DC_PARAMS can't filter negative O out without messing up info/idx/pulse signals
+---@type DeciderCombinatorParameters
+local STAT_DELAY_AC_PARAMS = {conditions={
+	{first_signal=SIG_EACH, comparator=">"},
+},outputs={
+	{signal=SIG_EACH, copy_count_from_input=true},
+}}
+-- always output status
+---@type DeciderCombinatorParameters
+local STAT_DC_PARAMS = {conditions={
+	{first_signal=SIG_ANYTHING, comparator="!=", constant=0},
+},outputs={
+	{signal=SIG_EVERYTHING, copy_count_from_input=true, networks=netR},
+	{signal=SIG_INFO, copy_count_from_input=true, networks=netG},
+	{signal=SIG_LIST_IDX, copy_count_from_input=true, networks=netG},
+	{signal=SIG_SWITCH_PULSE, copy_count_from_input=true, networks=netG},
+}}
+
+---@type DeciderCombinatorParameters
+local PULSE_DC_PARAMS = {conditions={
+	{first_signal=SIG_INTERNAL1, comparator="!=", second_signal=SIG_INTERNAL1,
+	 first_signal_networks=netR, second_signal_networks=netG},
+},outputs={
+	{signal=SIG_SWITCH_PULSE, copy_count_from_input=false, constant=1}
+}}
+
+-- If allowing interplanetary comms, raw read modes always work
+-- (note that requests still depend on which planet is being currently orbited)
+-- still keep check combinator when unchecked to output info signal, and so other code is simpler
+---@type DeciderCombinatorParameters
+local UNCHECKED_DC_PARAMS = {conditions={
+	{first_signal=SIG_ANYTHING, comparator="!=", constant=0, first_signal_networks=netR}
+}, outputs={
+	{signal=SIG_INFO, copy_count_from_input=false, constant=1}
+}}
+-- radar on ground: check platform planet directly
+-- could also add one loc CC per planet like with platform
+---@type DeciderCombinatorParameters
+local CHECK_DC_ON_PLANET_PARAMS = {conditions={
+	{first_signal={type="space-location", name=nil}, comparator="=", constant=3, first_signal_networks=netR}
+}, outputs={
+	{signal=SIG_INFO, copy_count_from_input=false, constant=1}
+}}
+-- radar on platform: check platform location against other platform
+-- loc contains only planet signals, so this allows connecting to other platforms in same orbit
+-- but not to anything but itself while in connection
+---@type DeciderCombinatorParameters
+local CHECK_DC_IN_SPACE_PARAMS = {conditions={
+	{first_signal=SIG_ORBIT_ID, comparator="<", constant=0, first_signal_networks=netR},
+	{first_signal=SIG_ORBIT_ID, comparator="=", second_signal=SIG_ORBIT_ID,
+		first_signal_networks=netR, second_signal_networks=netG, compare_type="and"},
+	{first_signal=SIG_PLAT_ID, comparator="=", second_signal=SIG_PLAT_ID,
+		first_signal_networks=netR, second_signal_networks=netG, compare_type="or"},
+}, outputs={
+	{signal=SIG_INFO, copy_count_from_input=false, constant=1}
 }}
 
 local util = require("util")
@@ -116,9 +176,7 @@ local M = {}
 
 M.defaults = {
 	sel_orbit_only = true,
-	dyn = { ---@type CircRG
-		R=false, G=true, -- R, G
-	},
+	dyn = "circuit_red",
 	std = { ---@type ReadStd
 		Sta = { R=true, G=true }, -- R, G
 		Req = { R=true, G=true },
@@ -194,14 +252,12 @@ function M.settings_to_tags(ghost, entity_id)
 end
 
 ---@param data RadarData
-local function clear_dcs(data)
-	if data.dcsR then
-		for _,v in pairs(data.dcsR) do
-			v.owner.destroy()
+local function clear_hidden_circ(data)
+	if data.hidden_circ then
+		for _,v in pairs(data.hidden_circ) do
+			v.destroy()
 		end
-		data.dcsR = nil
-		
-		data.ccPulse.entity.destroy()
+		data.hidden_circ = nil
 	end
 end
 
@@ -209,11 +265,7 @@ end
 function M.delete_radar(id)
 	local data = storage.radars[id]
 	if data then
-		clear_dcs(data)
-		
-		--if  data.dynCC then
-		--	data.dynCC.destroy()
-		--end
+		clear_hidden_circ(data)
 		
 		storage.radars[id] = nil
 		
@@ -237,23 +289,14 @@ end
 ---@param reconfig boolean
 local function refresh_radar_platform_mode(entity, data, reconfig)
 	local radar_surf = entity.surface
-	local dcsR = data.dcsR
-	
 	local S = data.S
-	local plat_data = data.S.selected_platform
-	local read_mode = data.S.read_mode
+	local read_mode = S.read_mode
+	local circ = data.hidden_circ
 	
-	local _inR = inR
-	local _outR = outR
-	local _circR = circR
-	
-	if not dcsR or reconfig then
-		local base_x = entity.position.x
-		local base_y = entity.position.y
-		
-		--if data.dynCC then
-		--	data.dynCC.destroy()
-		--end
+	-- reconfigure circuits
+	if not circ or reconfig then
+		local base_x = entity.position.x - 1.5
+		local base_y = entity.position.y -- - 2.5
 		
 		if S.dyn ~= nil then
 			storage.poll_dyn_select:try_add(data)
@@ -271,6 +314,12 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 			storage.poll_dyn_select:try_remove(data)
 		end
 		
+		circ = data.hidden_circ
+		if not circ then
+			circ = {}
+			data.hidden_circ = circ
+		end
+		
 		local allow_unchecked = ALLOW_INTERPL and read_mode == "raw"
 		local radar_planet = radar_surf.planet -- nil if radar placed on space platform
 		
@@ -278,204 +327,180 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		---@type DeciderCombinatorParameters
 		local params_check
 		if allow_unchecked then
-			-- If allowing interplanetary comms, raw read modes always work
-			-- (note that requests still depend on which planet is being currently orbited)
-			-- still keep check combinator when unchecked to output info signal, and so other code is simpler
-			---@type DeciderCombinatorParameters
-			params_check = {conditions={
-				{first_signal=SIG_ANYTHING, comparator="!=", constant=0, first_signal_networks=netR}
-			}, outputs={
-				{signal=SIG_INFO, copy_count_from_input=false, constant=1}
-			}}
+			params_check = UNCHECKED_DC_PARAMS
 		elseif radar_planet then
-			-- radar on ground: check platform planet directly
-			-- could also add one loc CC per planet like with platform
-			---@type DeciderCombinatorParameters
-			params_check = {conditions={
-				{first_signal={type="space-location", name=radar_planet.name}, comparator="=", constant=3, first_signal_networks=netR}
-			}, outputs={
-				{signal=SIG_INFO, copy_count_from_input=false, constant=1}
-			}}
+			params_check = table.deepcopy(CHECK_DC_ON_PLANET_PARAMS)
+			params_check.conditions[1].first_signal.name = radar_planet.name
 		else
-			-- radar on platform: check platform location against other platform
-			-- loc contains only planet signals, so this allows connecting to other platforms in same orbit
-			-- but not to anything but itself while in connection
-			params_check = {conditions={
-				-- this platform planet == other platform planet  (or space connection but only in same direction)
-				{first_signal=SIG_EVERYTHING, comparator="=", second_signal=SIG_EVERYTHING, first_signal_networks=netR, second_signal_networks=netG},
-				--  TODO:
-				{first_signal=SIG_EVERYTHING, comparator="=", constant=3, first_signal_networks=netR, },
-			}, outputs={
-				{signal=SIG_INFO, copy_count_from_input=false, constant=1}
-			}}
-		end
-		
-		if not dcsR then
-			dcsR = {}
-			data.dcsR = dcsR
-			
-			-- connection switch pulse generator CC
-			-- needs to be somewhere else if wanted for comms mode
-			local pcc = radar_surf.create_entity{
-				name="hexcoder_radar_uplink-pulsegen_cc", force=entity.force,
-				position={base_x-1.25, base_y-1.25}, snap_to_grid=false,
-				direction=defines.direction.south
-			} ---@cast pcc -nil
-			
-			pcc.destructible = false
-			pcc.combinator_description = "connection switch pulse generator CC"
-			
-			data.ccPulse = pcc.get_or_create_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
-			data.ccPulse.sections[1].set_slot(1, SIG_SWITCH_PULSE)
-			data.ccPulse.enabled = false
+			params_check = CHECK_DC_IN_SPACE_PARAMS
 		end
 		
 		local radarW = entity.get_wire_connectors(true)
-		local working = data.status == STATUS_WORKING -- powered and not frozen
 		
-		---@param x number
-		---@param y number
-		---@param name string
-		---@param params DeciderCombinatorParameters?
-		---@param config CircRG?
-		---@param chkG? LuaWireConnector[]
+		---@param params DeciderCombinatorParameters|ArithmeticCombinatorParameters?
+		---@param config CircRG|"circuit_red"|"circuit_green"|boolean?
 		---@return LuaWireConnector[]?
-		local function update_combinator(x,y, name, params, config, chkG)
-			local dc_inR = dcsR[name]
-			if not (config or name=="Check") then
-				if dc_inR then
-					local dc = dc_inR and dc_inR.owner
-					dc.destroy()
-					dcsR[name] = nil
+		local function combinator(ty, x,y, name, params, config, inR,inG)
+			local comb = circ[name]
+			if not config then
+				if comb then
+					comb.destroy()
+					circ[name] = nil
 				end
-				
 				return nil
 			else
-				local dc
-				if dc_inR then
-					dc = dc_inR.owner
-				else
-					dc = radar_surf.create_entity{
-						name="hexcoder_radar_uplink-dc", force=entity.force,
-						position={base_x+x-1.5, base_y+y}, snap_to_grid=false,
+				if not comb then
+					comb = radar_surf.create_entity{ ---@diagnostic disable-line
+						name="hexcoder_radar_uplink-"..ty, force=entity.force,
+						position={base_x + x*0.75, base_y + y}, snap_to_grid=false,
 						direction=defines.direction.south
-					} ---@cast dc -nil
+					} ---@cast comb -nil
+					comb.destructible = false
+					comb.combinator_description = name
 					
-					dc.destructible = false
-					dc.combinator_description = name
-					
-					dcsR[name] = dc.get_wire_connectors(true)[_inR]
+					circ[name] = comb
 				end
 				
 				if params then
-					local ctrl = dc.get_or_create_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
+					local ctrl = comb.get_or_create_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior|LuaArithmeticCombinatorControlBehavior]]
 					ctrl.parameters = params
 				end
 				
-				local dc_conn = dc.get_wire_connectors(true)
-				dc_conn[inG].disconnect_all()
-				dc_conn[outR].disconnect_all()
-				dc_conn[outG].disconnect_all()
-				
-				-- disconnect on power out, but keep combinators
-				-- TODO: optimize by moving to seperate case?
-				if working and config then
-					if config.R then dc_conn[outR].connect_to(radarW[circR], false, HIDDEN) end
-					if config.G then dc_conn[outG].connect_to(radarW[circG], false, HIDDEN) end
+				local conns = comb.get_wire_connectors(true)
+				for _,c in pairs(conns) do
+					c.disconnect_all(HIDDEN)
 				end
 				
-				if chkG then
-					dc_conn[inG].connect_to(chkG, false, HIDDEN)
+				if inR then conns[W_inR].connect_to(inR, false, HIDDEN) end
+				if inG then conns[W_inG].connect_to(inG, false, HIDDEN) end
+				
+				if type(config) == "table" then
+					if config.R then conns[W_outR].connect_to(radarW[W_circR], false, HIDDEN) end
+					if config.G then conns[W_outG].connect_to(radarW[W_circG], false, HIDDEN) end
+				elseif type(config) == "string" then
+					if config == "circuit_red" then conns[W_outR].connect_to(radarW[W_circR], false, HIDDEN) end
+					if config == "circuit_green" then conns[W_outG].connect_to(radarW[W_circG], false, HIDDEN) end
 				end
 				
-				return dc_conn
+				return conns
 			end
 		end
 		
+		-- planet check DC
 		local readRG = S.read ---@cast readRG -nil
-		local chk = update_combinator(3   ,-1, "Check",    params_check) ---@cast chk -nil
-		local chkG = chk[outG]
+		local chk = combinator("dc", 0,-1, "dcCheck", params_check, true) ---@cast chk -nil
 		
-		update_combinator(0   , 1, "Sta",      nil, readRG.Sta, chkG)
-		update_combinator( .75, 1, "Req",      DATA_DC_PARAMS, readRG.Req, chkG)
-		update_combinator(1.5 , 1, "Otw",      DATA_DC_PARAMS, readRG.Otw, chkG)
-		update_combinator(2.25, 1, "Inv",      DATA_DC_PARAMS, readRG.Inv, chkG)
+		-- Delay ACs to match check, or compute unfulfilled requests
+		local req_params = read_mode == "std" and ARITH_R_MINUS_G or ARITH_DELAY
+		local delaySta = combinator("dc",1, -1, "acSta", STAT_DELAY_AC_PARAMS, readRG.Sta ~= nil) ---@cast delaySta -nil
+		local delayReq = combinator("ac",2, -1, "acReq",  req_params, readRG.Req ~= nil) ---@cast delayReq -nil
+		local delayOtw = combinator("ac",3, -1, "acOtw", ARITH_DELAY, readRG.Otw ~= nil)
+		local delayInv = combinator("ac",4, -1, "acInv", ARITH_DELAY, readRG.Inv ~= nil)
+		
+		-- Output DCs
+		local chkG = chk[W_outG]
+		combinator("dc",0, 1, "dcSta", STAT_DC_PARAMS, readRG.Sta, delaySta and delaySta[W_outR], chkG)
+		combinator("dc",1, 1, "dcReq", DATA_DC_PARAMS, readRG.Req, delayReq and delayReq[W_outR], chkG)
+		combinator("dc",2, 1, "dcOtw", DATA_DC_PARAMS, readRG.Otw, delayOtw and delayOtw[W_outR], chkG)
+		combinator("dc",3, 1, "dcInv", DATA_DC_PARAMS, readRG.Inv, delayInv and delayInv[W_outR], chkG)
+		
+		-- Pulse from CC section toggle + CC section for outputting selected index
+		local cc =      combinator("cc", -1,-2.5, "ccPulse", nil, true) ---@cast cc -nil
+		local acPulse = combinator("ac", -1,  -1, "acPulse", ARITH_DELAY, true, cc[W_circR]) ---@cast acPulse -nil
+		local dcPulse = combinator("dc", -1,   1, "dcPulse", PULSE_DC_PARAMS, true, acPulse[W_outR], cc[W_circG]) ---@cast dcPulse -nil
+		
+		chkG.connect_to(acPulse[W_outG], false, HIDDEN)
+		chkG.connect_to(dcPulse[W_outG], false, HIDDEN)
+		
+		local ctrl = circ.ccPulse.get_or_create_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+		if ctrl.sections_count < 2 then
+			ctrl.add_section()
+		end
+		ctrl.sections[1].filters = { SIG_INTERNAL1F }
+		ctrl.sections[2].filters = { SIG_LIST_IDXF }
+		
+		data.ccPulseSec1 = ctrl.sections[1]
+		data.ccPulseSec2 = ctrl.sections[2]
+		data.dcCheckR = chk[W_inR]
+		data.delayStatR = delaySta[W_inR]
+		data.delayStatG = delaySta[W_inG]
+		data.delayReqR = delayReq[W_inR]
+		data.delayReqG = delayReq[W_inG]
+		if read_mode ~= "std" then
+			---@cast delayOtw -nil
+			---@cast delayInv -nil
+			data.delayOtwR = delayOtw[W_inR]
+			data.delayInvR = delayInv[W_inR]
+		end
 		
 		local this_plat = entity.surface.platform
 		if this_plat and this_plat.valid then
 			local this_plat_data = storage.platforms:init_platform(this_plat)
-			local pl2LocCC = this_plat_data.readers.loc_cc.get_wire_connectors(true)
-			chk[inG].connect_to(pl2LocCC[circG], false, HIDDEN)
+			
+			local statCC = this_plat_data.stat_cc.get_wire_connectors(true)
+			chk[W_inG].connect_to(statCC[W_circG], false, HIDDEN)
 		end
-		
-		data.dcStatCtrl = dcsR.Sta.owner.get_or_create_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior]]
-		
-		local ccPulse = data.ccPulse.entity.get_wire_connectors(true)
-		ccPulse[circR].disconnect_all()
-		ccPulse[circG].disconnect_all()
-		local pulseRG = readRG.Sta
-		if pulseRG then
-			if pulseRG.R then ccPulse[circR].connect_to(radarW[circR], false, HIDDEN) end
-			if pulseRG.G then ccPulse[circG].connect_to(radarW[circG], false, HIDDEN) end
-		end
-	end
-	
-	local dcCheckR    = dcsR.Check
-	local dcStatR     = dcsR.Sta
-	local dcReqR      = dcsR.Req
-	local dcOtwR      = nil
-	local dcInvR      = nil
-	local dcInvSlotsR = nil
-	
-	dcCheckR   .disconnect_all()
-	dcStatR    .disconnect_all()
-	dcReqR     .disconnect_all()
-	if read_mode ~= "std" then
-		dcOtwR      = dcsR.Otw
-		dcInvR      = dcsR.Inv
-		dcOtwR     .disconnect_all()
-		dcInvR     .disconnect_all()
 	end
 	
 	--game.print("reconnect!")
-		
-	local idx_sel = data.idx_sig
-	-- pass along each signal from platform status without check (on Red)
-	-- pass check signal as 'info is available' signal
-	-- output selection index if selected through index via dynamic selection
-	data.dcStatCtrl.parameters = {conditions={
-		{first_signal=SIG_ANYTHING, comparator="!=", constant=0, first_signal_networks=netR}
-	},outputs={
-		{signal=SIG_EVERYTHING, copy_count_from_input=true, networks=netR},
-		{signal=SIG_INFO, copy_count_from_input=true, networks=netG},
-		idx_sel and {signal=SIG_LIST_IDX, copy_count_from_input=false, constant=idx_sel} or nil
-	}}
 	
-	data.ccPulse.enabled = true
+	---- disconnect
+	local _circR = W_circR
 	
-	if plat_data then
+	local dcCheckR    = data.dcCheckR ---@cast dcCheckR -nil
+	local delayStatR     = data.delayStatR  ---@cast delayStatR -nil
+	local delayStatG     = data.delayStatG  ---@cast delayStatG -nil
+	local delayReqR      = data.delayReqR   ---@cast delayReqR -nil
+	local delayReqG      = data.delayReqG   ---@cast delayReqG -nil
+	local delayOtwR      = nil
+	local delayInvR      = nil
+	
+	dcCheckR.disconnect_all(HIDDEN)
+	delayStatR .disconnect_all(HIDDEN)
+	delayStatG .disconnect_all(HIDDEN)
+	delayReqR  .disconnect_all(HIDDEN)
+	delayReqG  .disconnect_all(HIDDEN)
+	if read_mode ~= "std" then
+		delayOtwR = data.delayOtwR  ---@cast delayOtwR -nil
+		delayInvR = data.delayInvR  ---@cast delayInvR -nil
+		delayOtwR.disconnect_all(HIDDEN)
+		delayInvR.disconnect_all(HIDDEN)
+	end
+	
+	local sec1 = data.ccPulseSec1 ---@cast sec1 -nil
+	local sec2 = data.ccPulseSec2 ---@cast sec2 -nil
+	
+	-- trigger switch pulse
+	sec1.active = not sec1.active
+	
+	local plat = S.selected_platform
+	
+	-- set sel_idx on CC
+	-- 0 if platform not found to enable easy iteration
+	local filters = sec2.filters
+	filters[1].min = plat and S.dyn and data.sel_idx or 0
+	sec2.filters = filters
+	
+	---- connect if powered and platform selected
+	local working = data.status == STATUS_WORKING -- powered and not frozen
+	if working and plat then
 		
-		-- connect DCs to platform if platform initialized
-		local pl = plat_data.readers
+		local plStat = plat.stat_cc.get_wire_connectors(true)[_circR]
+		dcCheckR.connect_to(plStat, false, HIDDEN)
+		delayStatR.connect_to(plStat, false, HIDDEN)
 		
-		-- split location status see platform init
-		local plLocCC = pl.loc_cc.get_wire_connectors(true)
-		local plStat = pl.stat.get_wire_connectors(true)
-		dcCheckR.connect_to(plLocCC[_circR], false, HIDDEN)
-		dcStatR.connect_to(plStat[_outR], false, HIDDEN)
+		local plReq = plat.req_cc.get_wire_connectors(true)
+		local plOtw = plat.otw_cc.get_wire_connectors(true)
 		
 		if read_mode == "std" then
-			local plReq = pl.req.get_wire_connectors(true)
-			
-			dcReqR.connect_to(plReq[_outR], false, HIDDEN)
+			delayReqR.connect_to(plReq[_circR], false, HIDDEN)
+			delayReqG.connect_to(plOtw[W_circG], false, HIDDEN) -- plOtw G connected to pc G
 		else
-			local plReq = pl.req_raw.get_wire_connectors(true)
-			local plOtw = pl.otw_raw.get_wire_connectors(true)
-			local plInv = pl.inv_raw.get_wire_connectors(true)
+			local plInv = plat.inv_pc.get_wire_connectors(true)
 			
-			dcReqR.connect_to(plReq[_outR], false, HIDDEN)
-			dcOtwR.connect_to(plOtw[_outR], false, HIDDEN) ---@diagnostic disable-line
-			dcInvR.connect_to(plInv[_outR], false, HIDDEN) ---@diagnostic disable-line
+			delayReqR.connect_to(plReq[_circR], false, HIDDEN)
+			delayOtwR.connect_to(plOtw[_circR], false, HIDDEN) ---@diagnostic disable-line
+			delayInvR.connect_to(plInv[_circR], false, HIDDEN) ---@diagnostic disable-line
 		end
 	end
 end
@@ -497,7 +522,7 @@ function M.refresh_radar(data, sel_changed_only)
 	end
 	
 	if data.S.mode == "comms" then
-		clear_dcs(data)
+		clear_hidden_circ(data)
 		storage.poll_dyn_select:try_remove(data)
 	elseif data.S.mode == "platforms" then
 		refresh_radar_platform_mode(entity, data, not sel_changed_only)
@@ -510,7 +535,7 @@ function M.refresh_radar(data, sel_changed_only)
 	if DEBUG then game.print("after refresh_radar: ".. serpent.line({
 			--data.S,
 			game.tick,
-			data.idx_sig, data.S.selected_platform and data.S.selected_platform.name
+			data.sel_idx, data.S.selected_platform and data.S.selected_platform.name
 		}), {
 		sound = (sel_changed_only and defines.print_sound.never or defines.print_sound.use_player_settings)
 	}) end
@@ -564,31 +589,22 @@ end
 ---@return PlatformData?, integer? idx
 local function dyn_select_platform(data, entity)
 	local S = data.S
-	local wireR = S.dyn.R and circR or nil
-	local wireG = S.dyn.G and circG or nil
+	local wire = defines.wire_connector_id[S.dyn]
 	
-	-- just use change detection with memory cell here, its faster, but may want to restrict wire to R or G
-	local wires1 = wireR or wireG
-	local wires2 = wireR and wireG
-	if wires1 then
-		local id
-		if wires2 == nil then id = entity.get_signal(SIG_PLAT_ID, wires1)
-		                 else id = entity.get_signal(SIG_PLAT_ID, wires1, wires2) end
-		--local id = entity.get_signal(SIG_PLAT_ID, wires1, wires2) -- this does not work despite  extra_wire_connector_id :: defines.wire_connector_id?
-		-- is there actually function overloading for userdata functions?
-		if id > 0 then
-			local plat_data = storage.platforms[id]
-			return plat_data
-		end
-		
-		local idx
-		if wires2 == nil then idx = entity.get_signal(SIG_LIST_IDX, wires1)
-		                 else idx = entity.get_signal(SIG_LIST_IDX, wires1, wires2) end
+	if wire then
+		-- list index has priority to enable easy iteration even if dynamic select wire is same as output wire
+		local idx = entity.get_signal(SIG_LIST_IDX, wire)
 		if idx > 0 then
 			local list = M.get_platform_list(data)
 			
 			local plat_data = list[idx]
 			return plat_data, idx
+		end
+		
+		local id = entity.get_signal(SIG_PLAT_ID, wire)
+		if id > 0 then
+			local plat_data = storage.platforms[id]
+			return plat_data
 		end
 	end
 	
@@ -605,12 +621,12 @@ function M.poll_dyn_select(data)
 	-- selected new platform, or selected via different signal
 	-- (same signal can have platform change because orbital filter)
 	-- same platform still requires selected signal output to be updated (TODO: could latch this information?)
-	if new_sel == data.S.selected_platform and idx == data.idx_sig then
+	if new_sel == data.S.selected_platform and idx == data.sel_idx then
 		return
 	end
 	
 	data.S.selected_platform = new_sel
-	data.idx_sig = idx
+	data.sel_idx = idx -- keep indx even if platform not found for change detect
 	
 	--entity.surface.play_sound{ path="utility/entity_settings_pasted", position=entity.position, volume_multiplier=1.25, override_sound_type="game-effect" }
 	--entity.surface.play_sound{ path="utility/smart_pipette", position=entity.position, volume_multiplier=5.0, override_sound_type="game-effect" }
@@ -630,7 +646,7 @@ function M.poll_radar(data)
 		local new_status = entity.status ---@cast new_status -nil
 		if new_status ~= data.status then
 			data.status = new_status
-			M.refresh_radar(data)
+			M.refresh_radar(data, true)
 		end
 	end
 end

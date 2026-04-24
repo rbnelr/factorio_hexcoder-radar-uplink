@@ -146,8 +146,8 @@ local function radar2gui(gui, data)
 	
 	refs.dyn_enable.state = S.dyn ~= nil
 	local dyn = S.dyn or radars.defaults.dyn
-	refs.dynR.state = dyn.R
-	refs.dynG.state = not dyn.R
+	refs.dynR.state = dyn == "circuit_red"
+	refs.dynG.state = not refs.dynR.state
 	refs.dyn_text.text = S.dyn_text or ""
 	
 	-- comms mode
@@ -216,7 +216,9 @@ local function gui_state_changed(event)
 	--S.dyn = refs.dyn_enable.state and { R=refs.dynR.state, G=refs.dynG.state } or nil
 	if event.element.name == "dynR" then refs.dynG.state = false end
 	if event.element.name == "dynG" then refs.dynR.state = false end
-	S.dyn = refs.dyn_enable.state and { R=refs.dynR.state, G=refs.dynG.state } or nil
+	if not refs.dyn_enable.state then S.dyn = nil
+	elseif refs.dynR.state then S.dyn = "circuit_red"
+	else                        S.dyn = "circuit_green" end
 	
 	if S.mode == "comms" then
 		--S.selected_channel = gui.drop_down_channels[gui.refs.ch_drop_down.selected_index]
@@ -256,7 +258,6 @@ local function gui_state_changed(event)
 	
 	gui_update_vis_en(gui)
 	
-	data.idx_sig = nil -- ui selection does not need this
 	radars.refresh_radar(data)
 end
 script.on_event({
@@ -275,11 +276,11 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		
 	else
 		data.S.selected_platform = gui.sel_items[event.element.selected_index]
+		data.sel_idx = event.element.selected_index
 		
 		gui_update_platform_list(gui, data) -- update list so that fake entries disappear
 	end
 	
-	data.idx_sig = nil -- ui selection does not need this
 	radars.refresh_radar(data, true)
 end)
 

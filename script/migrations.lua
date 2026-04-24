@@ -18,7 +18,7 @@ function M.migrate_less0_1_4()
 	---@field sel_orbit_only? boolean
 	---@field selected_channel? channel_id
 	---@field selected_platform? PlatformData|LuaSpacePlatform|platform_index
-	---@field dyn? CircRG
+	---@field dyn? CircRG|"circuit_red"|"circuit_green"
 	---@field dyn_text? string
 	---@field read_mode? "std"|"raw"
 	---@field read? ReadStd|ReadRaw
@@ -41,7 +41,14 @@ function M.migrate_less0_1_4()
 			S.mode = old_data.S.mode == "platforms" and "platforms" or "comms"
 			
 			S.sel_orbit_only = old_data.S.sel_orbit_only
-			S.dyn = old_data.S.dyn
+			
+			local dyn = old_data.S.dyn
+			if type(dyn) == "string" then
+				S.dyn = dyn
+			elseif type(dyn) == "table" then
+				S.dyn = dyn.R and "circuit_red" or dyn.G and "circuit_green" or nil
+			end
+			
 			S.dyn_text = old_data.S.dyn_text
 			
 			if old_data.S.mode == "platforms" then

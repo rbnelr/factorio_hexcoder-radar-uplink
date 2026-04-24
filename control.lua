@@ -56,7 +56,7 @@ TODO: copy paste? not really possible to do properly (with visual feedback?); bu
 ---@type ModStorage
 storage = storage
 
-DEBUG = true
+DEBUG = false
 
 local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
@@ -65,7 +65,7 @@ local radar_gui = require("script.radar_gui")
 local migrations = require("script.migrations")
 local myutil = require("script.myutil")
 
-local SEL_POLL_PERIOD = 15
+local SEL_POLL_PERIOD = 16
 
 -- Keep in nth tick or also stagger_tick? maybe infrequently updating distance readings are cleaner if synched?
 script.on_nth_tick(12, function(event)
@@ -256,7 +256,7 @@ function migrations.reset()
 	for _, player in pairs(game.players) do player.opened = nil end
 	
 	for _, s in pairs(game.surfaces) do
-		for _, name in pairs({"cc","pulsegen_cc","dc","ac","pc"}) do
+		for _, name in pairs({"cc","dc","ac","pc"}) do
 			for _, e in pairs(s.find_entities_filtered{ name="hexcoder_radar_uplink-"..name }) do
 				e.destroy()
 			end

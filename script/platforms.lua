@@ -16,17 +16,21 @@
 	-> actually on_entity_logistic_slot_changed does not trigger if a section is toggled, so it's not reliable...
 ]]
 
----@class PlatformData
+---@class (exact) PlatformData
 ---@field name string
 ---@field platform LuaSpacePlatform -- should already be built but could be scheduled_for_deletion
----@field readers table<string, LuaEntity> Hidden combinators to read platform info from radar combinators
----@field _prev_loc LuaSpaceConnectionPrototype|LuaSpaceLocationPrototype|nil
+---@field stat_cc LuaEntity
+---@field req_cc LuaEntity
+---@field otw_cc LuaEntity
+---@field inv_pc LuaEntity
+---@field _prev_loc LuaSpaceConnectionPrototype|LuaSpaceLocationPrototype?
 ---@field _prev_progress number?
 
 ---@class Platforms
 ---@field [platform_index] PlatformData
 ---@field all_sorted PlatformData[]
 ---@field orbiting table<string, PlatformData[]>
+---@field _orbit_id table<string, integer>
 local Platforms = {}
 Platforms.__index = Platforms
 
@@ -38,38 +42,35 @@ local function round(num)
 end
 
 local W = defines.wire_connector_id
+local W_circG = W.circuit_green
 local HIDDEN = defines.wire_origin.script
-local netR = {red=true, green=false}
-local netG = {red=false, green=true}
-local circR = W.circuit_red
-local circG = W.circuit_green
-local inR = W.combinator_input_red
-local inG = W.combinator_input_green
-local outR = W.combinator_output_red
-local outG = W.combinator_output_green
 
 local SIG_PLAT_ID                = {type="virtual", name="signal-P", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_PROGRESS_PERCENT  = {type="virtual", name="signal-T", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_PROGRESS_DISTANCE = {type="virtual", name="signal-D", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_SPEED             = {type="virtual", name="signal-V", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_INV_SLOTS         = {type="virtual", name="signal-S", quality="normal"} ---@type SignalFilter
-
-local SIG_EACH       = {type="virtual", name="signal-each"} ---@type SignalID
-local SIG_EVERYTHING = {type="virtual", name="signal-everything"} ---@type SignalID
-
-local ARITH_IDENTITY = { ---@type ArithmeticCombinatorParameters
-	first_signal=SIG_EACH, second_constant=1, operation="*",
-	output_signal=SIG_EACH
-}
-local ARITH_RMINUSG = { ---@type ArithmeticCombinatorParameters
-	first_signal=SIG_EACH, second_signal=SIG_EACH, operation="-",
-	first_signal_networks=netR, second_signal_networks=netG,
-	output_signal=SIG_EACH
-}
+local SIG_ORBIT_ID               = {type="virtual", name="signal-O", quality="normal"} ---@type SignalFilter
 
 ---@return Platforms
 function Platforms.new()
-	return setmetatable({ all_sorted={}, orbiting={} }, Platforms)
+	local ids = {}
+	--for name,val in pairs(prototypes["space-location"]) do
+	--	if name ~= "space-location-unknown" then
+	--		if ids[name] == nil then
+	--			ids[name] = table_size(ids)+1
+	--		end
+	--	end
+	--end
+	
+	-- only LuaPlanet orbits allow connection (not solar system edge and shattered planet)
+	for name,val in pairs(game.planets) do
+		if ids[name] == nil then
+			ids[name] = table_size(ids)+1
+		end
+	end
+
+	return setmetatable({ all_sorted={}, orbiting={}, _orbit_id=ids }, Platforms)
 end
 
 -- platforms that are not build yet are arkward, as they have no hub etc.
@@ -95,7 +96,7 @@ function Platforms:init_platform(platform)
 	local base_pos = platform.hub.position
 	
 	-- contant combinators script can write signals into on events
-	local function combinator(type, x,y, descr, arith, input_red, inputs_green)
+	local function combinator(type, x,y, descr)
 		local combinator = platform.surface.create_entity{
 			name=type, force=platform.force,
 			position={base_pos.x+x, base_pos.y+y}, snap_to_grid=false,
@@ -103,22 +104,6 @@ function Platforms:init_platform(platform)
 		} ---@cast combinator -nil
 		combinator.destructible = false
 		combinator.combinator_description = descr
-		if arith then
-			local ctrl = combinator.get_control_behavior() --[[@as LuaArithmeticCombinatorControlBehavior]]
-			ctrl.parameters = arith
-		end
-		if input_red then
-			local i = input_red.get_wire_connectors(true)[circR]
-			local o = combinator.get_wire_connectors(true)[inR]
-			o.connect_to(i, false, HIDDEN)
-		end
-		if inputs_green then
-			for _,inp in ipairs(inputs_green) do
-				local i = inp.get_wire_connectors(true)[circG]
-				local o = combinator.get_wire_connectors(true)[inG]
-				o.connect_to(i, false, HIDDEN)
-			end
-		end
 		return combinator
 	end
 	local function proxy_container(type, x,y)
@@ -134,29 +119,24 @@ function Platforms:init_platform(platform)
 		return pc
 	end
 	
-	local readers = {}
-	readers.stat_cc = combinator("hexcoder_radar_uplink-cc", -3,0, "platform status")
-	readers.loc_cc  = combinator("hexcoder_radar_uplink-cc", -2,0, "platform location (split from status to support platform to platform check)")
-	readers.req_cc  = combinator("hexcoder_radar_uplink-cc", -1,0, "platform requests at current planet")
-	readers.otw_cc  = combinator("hexcoder_radar_uplink-cc", 0,0, "platform targeted_items_deliver ('on the way' via rocket silo cargo pod)")
-	-- proxy container that automatically reads platform hub iventory without user needing to use "read contents" option
-	readers.inv_pc  = proxy_container("hexcoder_radar_uplink-pc", 1,0)
+	data = {
+		name = platform.name,
+		platform = platform,
+		stat_cc = combinator("hexcoder_radar_uplink-cc", -1,1, "platform status"),
+		req_cc  = combinator("hexcoder_radar_uplink-cc", 0,1, "platform requests at current planet"),
+		otw_cc  = combinator("hexcoder_radar_uplink-cc", 1,1, "platform targeted_items_deliver ('on the way' via rocket silo cargo pod)"),
+		-- proxy container that automatically reads platform hub iventory without user needing to use "read contents" option
+		inv_pc  = proxy_container("hexcoder_radar_uplink-pc", 1,0),
+	}
 	
-	readers.stat    = combinator("hexcoder_radar_uplink-ac", -2,1.5, "platform status, delay=1 (Loc + Stat)", ARITH_IDENTITY, readers.loc_cc, {readers.stat_cc})
-	readers.req_raw = combinator("hexcoder_radar_uplink-ac", -1,1.5, "platform requests at current planet, delay=1", ARITH_IDENTITY, readers.req_cc)
-	readers.otw_raw = combinator("hexcoder_radar_uplink-ac", 0,1.5, "platform deliveries on the way, delay=1", ARITH_IDENTITY, readers.otw_cc)
-	readers.inv_raw = combinator("hexcoder_radar_uplink-ac", 1,1.5, "platform hub inventory negated, delay=1", ARITH_IDENTITY, readers.inv_pc)
+	-- connect here via green to eliminate one wire connect on radar connection switch
+	local otw = data.otw_cc.get_wire_connectors(true)
+	local inv = data.inv_pc.get_wire_connectors(true)
+	otw[W_circG].connect_to(inv[W_circG], false, HIDDEN)
 	
-	readers.req = combinator("hexcoder_radar_uplink-ac", 2,-2, "unfulfilled platform requests (Req - (Otw+Inv))", ARITH_RMINUSG, readers.req_cc, { readers.otw_cc, readers.inv_pc })
-	
-	readers.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	data.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 		.add_section() -- section 2 for slots
 	
-	data = {
-		name=platform.name,
-		platform=platform,
-		readers=readers,
-	}
 	script.register_on_object_destroyed(platform)
 	self[id] = data
 	
@@ -171,10 +151,10 @@ end
 function Platforms:delete_platform(id)
 	local data = self[id]
 	if data then
-		for _,e in pairs(data.readers) do
-			e.destroy()
-		end
-		data.readers = nil
+		data.stat_cc.destroy()
+		data.req_cc.destroy()
+		data.otw_cc.destroy()
+		data.inv_pc.destroy()
 		self[id] = nil
 	end
 	
@@ -214,39 +194,45 @@ end
 ---@param surface LuaSurface
 ---@return PlatformData[]
 function Platforms:get_orbiting_platform_list(surface)
-	local planet = surface.planet or surface.platform.space_location
-	if planet == nil then
+	-- LuaPlanet or LuaSpaceLocationPrototype
+	local space_loc = surface.planet or surface.platform.space_location
+	if space_loc == nil then
 		assert(surface.platform ~= nil)
+		-- radar not on planet but also not at space loacation
+		-- can only connect to itself while on space connection
 		local plat_data = self[surface.platform.index]
 		return { plat_data }
 	end
 	
 	-- return cached planet list or recreate an invalidated one
-	local planet_name = planet.name
-	local orbiting = self.orbiting[planet_name]
+	local orbit_name = space_loc.name
+	local orbiting = self.orbiting[orbit_name]
 	if not orbiting then
-		-- get actual planet for LuaSpaceLocationPrototype
-		-- not sure why API for space_location even gives LuaSpaceLocationPrototype? can a LuaSpaceLocationPrototype not have a planet?
-		if planet.object_name == "LuaSpaceLocationPrototype" then
-			planet = game.planets[planet_name]
-			assert(planet ~= nil)
-			if not planet then return {} end
-		end
-		---@cast planet LuaPlanet
-		
-		script.register_on_object_destroyed(planet)
-		
-		orbiting = {}
-		local counter = 1
-		for _, platf in pairs(planet.get_space_platforms(game.forces.player)) do
-			local data = self[platf.index]
-			if data then
-				orbiting[counter] = data
-				counter = counter+1
+		-- if LuaSpaceLocationPrototype try get actual planet
+		local planet = space_loc.object_name == "LuaPlanet" and space_loc or game.planets[space_loc.name]
+		if planet then
+			script.register_on_object_destroyed(planet)
+			
+			orbiting = {}
+			local counter = 1
+			for _, platf in pairs(planet.get_space_platforms(game.forces.player)) do
+				local data = self[platf.index]
+				if data then
+					orbiting[counter] = data
+					counter = counter+1
+				end
 			end
+		else
+			-- solar system edge and shattered planet do not actually have planets!
+			
+			-- TODO: while it makes sense in universe that solar system edge is a huge space, and that we really reach shattered planet
+			--       so it could make sense to not allow platforms to reach each other, it seems inconsitent when looking at the space map
+			--       also I want to be able to report the progress of my promethium ships with displays on nauvis, so at least radar relays have to be able to do this
+			-- -> So we might want to fallback to our own list tracking here (arrival order), which seems relatively simple
+			local plat_data = self[surface.platform.index]
+			return { plat_data }
 		end
-		
-		self.orbiting[planet_name] = orbiting
+		self.orbiting[orbit_name] = orbiting
 	end
 	return orbiting
 end
@@ -260,7 +246,6 @@ function Platforms:update_platform_status(plat, data)
 	
 	-- TODO: could be sped up via caching!
 	
-	local loc = {} ---@type LogisticFilter[]
 	local stat = {} ---@type LogisticFilter[]
 	
 	-- platform index
@@ -268,8 +253,13 @@ function Platforms:update_platform_status(plat, data)
 	
 	-- space location: report that platform is orbiting
 	if plat.space_location then
-		loc[1] = {value={type="space-location", name=plat.space_location.name, quality="normal"}, min=3}
 		data._prev_loc = plat.space_location
+		
+		local loc_name = plat.space_location.name
+		local orbit_id = self._orbit_id[loc_name] or 0
+		
+		stat[2] = {value={type="space-location", name=loc_name, quality="normal"}, min=3}
+		stat[4] = {value=SIG_ORBIT_ID, min=-orbit_id}
 		
 		--storage.polling_platforms[plat.index] = nil -- stop polling if orbiting
 	
@@ -313,15 +303,15 @@ function Platforms:update_platform_status(plat, data)
 				progress = 1.0 - progress
 			end
 			
-			loc[1] = {value={type="space-location", name=from.name, quality="normal"}, min=1}
-			loc[2] = {value={type="space-location", name=  to.name, quality="normal"}, min=2}
+			stat[2] = {value={type="space-location", name=from.name, quality="normal"}, min=1}
+			stat[3] = {value={type="space-location", name=  to.name, quality="normal"}, min=2}
 			
 			if progress then
 				-- distance is in [0,1]
 				local percent = round(progress * 100.0)
 				local dist_km = round(progress * conn.length)
-				stat[2] = {value=SIG_PLAT_PROGRESS_PERCENT, min=percent}
-				stat[3] = {value=SIG_PLAT_PROGRESS_DISTANCE, min=dist_km}
+				stat[5] = {value=SIG_PLAT_PROGRESS_PERCENT, min=percent}
+				stat[6] = {value=SIG_PLAT_PROGRESS_DISTANCE, min=dist_km}
 			end
 		end
 		
@@ -329,7 +319,7 @@ function Platforms:update_platform_status(plat, data)
 			-- speed is km/tick, abs to as -10km/s falling back counts as reversing for us, but nor for game
 			-- report speed as always positive, whenever start falling back should see to/from reverse
 			speed = round(math.abs(speed) * 60.0)
-			stat[4] = {value=SIG_PLAT_SPEED, min=speed}
+			stat[7] = {value=SIG_PLAT_SPEED, min=speed}
 		end
 		
 		-- in transit, update in real time
@@ -338,10 +328,7 @@ function Platforms:update_platform_status(plat, data)
 	
 	-- TODO: cache LuaLogisticSection ?
 	-- TODO: add valid check!
-	local ctrl = data.readers.loc_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
-	ctrl.sections[1].filters = loc
-	
-	local ctrl2 = data.readers.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	local ctrl2 = data.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl2.sections[1].filters = stat
 end
 
@@ -355,7 +342,7 @@ function Platforms:update_platform_inv_slots(plat, data)
 	local inv = plat.hub.get_inventory(defines.inventory.hub_main)
 	local slots = inv and #inv or 0
 	
-	local ctrl = data.readers.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	local ctrl = data.stat_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[2].set_slot(1, {value=SIG_PLAT_INV_SLOTS, min=slots})
 end
 
@@ -402,7 +389,7 @@ function Platforms:update_platform_requests_at_planet(plat, data)
 		end
 	end
 	
-	local ctrl = data.readers.req_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	local ctrl = data.req_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[1].filters = signals
 end
 
@@ -428,7 +415,7 @@ function Platforms:update_platform_deliveries_on_the_way(plat, data)
 		end
 	end
 	
-	local ctrl = data.readers.otw_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+	local ctrl = data.otw_cc.get_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
 	ctrl.sections[1].filters = signals -- could avoid
 end
 
