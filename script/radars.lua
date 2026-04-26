@@ -19,19 +19,25 @@
 ---@field id unit_number
 ---@field entity LuaEntity
 ---@field status defines.entity_status Last status for power check
----@field sel_idx? integer if selected by list index, keep outputting index for iteration setups with dynamic selection
 ---@field S RadarSettings
 -- Hidden combinators that connect to platform CCs, store red input wire directly for efficiency, entity is .owner
 ---@field hidden_circ? table<string, LuaEntity>
----@field ccPulseSec1? LuaLogisticSection
----@field ccPulseSec2? LuaLogisticSection
+---@field ccPulseCtrl? LuaConstantCombinatorControlBehavior
+---@field ccSelSec1? LuaLogisticSection
 ---@field dcCheckR? LuaWireConnector
 ---@field delayStatR?  LuaWireConnector
----@field delayStatG?  LuaWireConnector
 ---@field delayReqR?   LuaWireConnector
 ---@field delayReqG?   LuaWireConnector
 ---@field delayOtwR?   LuaWireConnector
 ---@field delayInvR?   LuaWireConnector
+---@field sel_idx? integer if selected by list index, keep outputting index for iteration setups with dynamic selection
+---@field sel_idx_from_gui? boolean
+---@field dyn_param? integer
+-- names are filtered using dyn_pattern in the gui to show all possible matches (showing all intergers for {X})
+-- if '{X}' appears  dyn_pattern_format:format(get_signal(dyn_pattern_signal))  is used during actual selection
+---@field dyn_pattern? string -- used for filtering candiates
+---@field dyn_pattern_format? string -- format string to get actual pattern; nil if no '{X}'
+---@field dyn_pattern_signal? SignalID -- nil if no '{X}'
 
 -- TODO: sel_orbit_only only makes sense when in dynamic selection mode
 -- otherwise it does nothing except act as a filter in the gui
@@ -75,8 +81,11 @@ local SIG_INTERNAL1    = {type="virtual", name="signal-exclamation-mark"} ---@ty
 local SIG_SWITCH_PULSE = {type="virtual", name="signal-rightwards-leftwards-arrow"} ---@type SignalID
 local SIG_ORBIT_ID     = {type="virtual", name="signal-O"} ---@type SignalID
 
-local SIG_INTERNAL1F = { value={type="virtual", name=SIG_INTERNAL1.name, quality="normal"}, min=1 } ---@type LogisticFilter
-local SIG_LIST_IDXF  = { value={type="virtual", name=SIG_LIST_IDX.name, quality="normal"}, min=0 } ---@type LogisticFilter
+--local SIG_INTERNAL1F = { value={type="virtual", name=SIG_INTERNAL1.name, quality="normal"}, min=1 } ---@type LogisticFilter
+--local SIG_LIST_IDXF  = { value={type="virtual", name=SIG_LIST_IDX.name, quality="normal"}, min=0 } ---@type LogisticFilter
+
+local SIG_INTERNAL1F = { value=SIG_INTERNAL1.name, min=1 } ---@type LogisticFilter
+local SIG_LIST_IDXF  = { value=SIG_LIST_IDX.name, min=0 } ---@type LogisticFilter
 
 local ARITH_DELAY = { ---@type ArithmeticCombinatorParameters
 	first_signal=SIG_EACH, second_constant=0, operation="+",
@@ -275,12 +284,90 @@ function M.delete_radar(id)
 end
 
 ---@param data RadarData
+---@param text? string
+function M.set_dyn_filter(data, text)
+	data.S.dyn_text = text
+	
+	text = text and text:match("^%s*(.-)%s*$")
+	
+	if not (text and string.len(text) > 0) then
+		data.dyn_pattern = nil
+		data.dyn_pattern_format = nil
+		data.dyn_pattern_signal = nil
+		data.dyn_param = nil
+		return
+	end
+	
+	-- escape   % ^ $ . * + - ? [ ] ( )   in user string for final find/match (before we add '.-' or other patterns)!
+	text = text:gsub("[%%%^%$%.%*%+%-%?%[%]%(%)]", "%%%0")
+	
+	-- "%X" -> "X", only returns first match
+	local letter_pattern = "{([%w])}" -- lower/uppercase letter or digit
+	local letter = text:match(letter_pattern)
+	local pat, fmt, sig
+	
+	-- allow "{}" as wildcard, and allow mid-typing "{" for smoother gui feedback
+	text = text:gsub("{}", ".-")
+	           :gsub("{$", ".-$")
+	
+	pat = text
+	
+	if letter then
+		sig = {type="virtual", name="signal-"..letter:upper()}
+		
+		pat = text:gsub(letter_pattern, "%%-?%%d+", 1) -- match any integer for gui filtering
+		fmt = text:gsub("%%", "%%%%") -- escape again but for string.format this time, "%" -> "%%"
+		          :gsub(letter_pattern, "%%d", 1) -- format integer for signal-based filtering
+	end
+	
+	data.dyn_pattern = pat
+	data.dyn_pattern_format = fmt
+	data.dyn_pattern_signal = sig
+	
+	game.print(serpent.block({ pat, fmt, fmt and fmt:format(5) }))
+end
+
+---@param data RadarData
 ---@return PlatformData[]
-function M.get_platform_list(data)
+local function get_platform_list(data)
 	if data.S.sel_orbit_only then
 		return storage.platforms:get_orbiting_platform_list(data.entity.surface)
 	else
 		return storage.platforms.all_sorted
+	end
+end
+
+---@alias PlatformIteratorFunc fun(): integer?, PlatformData?, string?
+
+---@param data RadarData
+---@param list PlatformData[]
+---@return PlatformIteratorFunc
+function M.filter_list(data, list)
+	local i = 0
+	return function()
+		while true do
+			if i == #list then
+				return nil
+			end
+			i = i + 1
+			local item = list[i]
+			-- highlight entire match part of the name in bold yellow for gui
+			local matched, count = item.name:gsub(data.dyn_pattern, "[color=#ffff80][font=default-bold]%0[/font][/color]", 1)
+			if count > 0 then
+				return i, item, matched
+			end
+		end
+	end
+end
+
+---@param data RadarData
+---@return PlatformIteratorFunc|any, any, nil -- syntax ??
+function M.get_platform_list_filtered_for_gui(data)
+	local list = get_platform_list(data)
+	if data.dyn_pattern then
+		return M.filter_list(data, list)
+	else
+		return pairs(list)
 	end
 end
 
@@ -296,7 +383,7 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	-- reconfigure circuits
 	if not circ or reconfig then
 		local base_x = entity.position.x - 1.5
-		local base_y = entity.position.y -- - 2.5
+		local base_y = entity.position.y - 2.5
 		
 		if S.dyn ~= nil then
 			storage.poll_dyn_select:try_add(data)
@@ -399,31 +486,31 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		
 		-- Output DCs
 		local chkG = chk[W_outG]
-		combinator("dc",0, 1, "dcSta", STAT_DC_PARAMS, readRG.Sta, delaySta and delaySta[W_outR], chkG)
-		combinator("dc",1, 1, "dcReq", DATA_DC_PARAMS, readRG.Req, delayReq and delayReq[W_outR], chkG)
-		combinator("dc",2, 1, "dcOtw", DATA_DC_PARAMS, readRG.Otw, delayOtw and delayOtw[W_outR], chkG)
-		combinator("dc",3, 1, "dcInv", DATA_DC_PARAMS, readRG.Inv, delayInv and delayInv[W_outR], chkG)
+		local sta = combinator("dc",0, 1, "dcSta", STAT_DC_PARAMS, readRG.Sta, delaySta and delaySta[W_outR], chkG)
+		            combinator("dc",1, 1, "dcReq", DATA_DC_PARAMS, readRG.Req, delayReq and delayReq[W_outR], chkG) ---@cast sta -nil
+		            combinator("dc",2, 1, "dcOtw", DATA_DC_PARAMS, readRG.Otw, delayOtw and delayOtw[W_outR], chkG)
+		            combinator("dc",3, 1, "dcInv", DATA_DC_PARAMS, readRG.Inv, delayInv and delayInv[W_outR], chkG)
 		
 		-- Pulse from CC section toggle + CC section for outputting selected index
 		local cc =      combinator("cc", -1,-2.5, "ccPulse", nil, true) ---@cast cc -nil
+		local cc2 =     combinator("cc",  0,-2.5, "ccSel", nil, true) ---@cast cc2 -nil
 		local acPulse = combinator("ac", -1,  -1, "acPulse", ARITH_DELAY, true, cc[W_circR]) ---@cast acPulse -nil
 		local dcPulse = combinator("dc", -1,   1, "dcPulse", PULSE_DC_PARAMS, true, acPulse[W_outR], cc[W_circG]) ---@cast dcPulse -nil
 		
+		cc2[W_circG].connect_to(delaySta[W_inG], false, HIDDEN)
 		chkG.connect_to(acPulse[W_outG], false, HIDDEN)
-		chkG.connect_to(dcPulse[W_outG], false, HIDDEN)
+		sta[W_inG].connect_to(dcPulse[W_outG], false, HIDDEN)
 		
-		local ctrl = circ.ccPulse.get_or_create_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
-		if ctrl.sections_count < 2 then
-			ctrl.add_section()
-		end
-		ctrl.sections[1].filters = { SIG_INTERNAL1F }
-		ctrl.sections[2].filters = { SIG_LIST_IDXF }
+		local ctrl1 = circ.ccPulse.get_or_create_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+		local ctrl2 = circ.ccSel  .get_or_create_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+		ctrl1.sections[1].filters = { SIG_INTERNAL1F }
+		ctrl2.sections[1].filters = { SIG_LIST_IDXF }
 		
-		data.ccPulseSec1 = ctrl.sections[1]
-		data.ccPulseSec2 = ctrl.sections[2]
+		data.ccPulseCtrl = ctrl1
+		data.ccSelSec1 = ctrl2.sections[1]
+		
 		data.dcCheckR = chk[W_inR]
 		data.delayStatR = delaySta[W_inR]
-		data.delayStatG = delaySta[W_inG]
 		data.delayReqR = delayReq[W_inR]
 		data.delayReqG = delayReq[W_inG]
 		if read_mode ~= "std" then
@@ -449,7 +536,6 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	
 	local dcCheckR    = data.dcCheckR ---@cast dcCheckR -nil
 	local delayStatR     = data.delayStatR  ---@cast delayStatR -nil
-	local delayStatG     = data.delayStatG  ---@cast delayStatG -nil
 	local delayReqR      = data.delayReqR   ---@cast delayReqR -nil
 	local delayReqG      = data.delayReqG   ---@cast delayReqG -nil
 	local delayOtwR      = nil
@@ -457,7 +543,6 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	
 	dcCheckR.disconnect_all(HIDDEN)
 	delayStatR .disconnect_all(HIDDEN)
-	delayStatG .disconnect_all(HIDDEN)
 	delayReqR  .disconnect_all(HIDDEN)
 	delayReqG  .disconnect_all(HIDDEN)
 	if read_mode ~= "std" then
@@ -467,19 +552,27 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		delayInvR.disconnect_all(HIDDEN)
 	end
 	
-	local sec1 = data.ccPulseSec1 ---@cast sec1 -nil
-	local sec2 = data.ccPulseSec2 ---@cast sec2 -nil
+	local pulse = data.ccPulseCtrl ---@cast pulse -nil
+	local selCC = data.ccSelSec1 ---@cast selCC -nil
 	
 	-- trigger switch pulse
-	sec1.active = not sec1.active
+	pulse.enabled = not pulse.enabled
 	
 	local plat = S.selected_platform
 	
 	-- set sel_idx on CC
 	-- 0 if platform not found to enable easy iteration
-	local filters = sec2.filters
+	local filters = selCC.filters
 	filters[1].min = plat and S.dyn and data.sel_idx or 0
-	sec2.filters = filters
+	if data.dyn_pattern_signal then
+		local filter = filters[2] or {}
+		filter.value = data.dyn_pattern_signal.name
+		filter.min = data.dyn_param or 0
+		filters[2] = filter
+	else
+		filters[2] = nil
+	end
+	selCC.filters = filters
 	
 	---- connect if powered and platform selected
 	local working = data.status == STATUS_WORKING -- powered and not frozen
@@ -519,6 +612,10 @@ function M.refresh_radar(data, sel_changed_only)
 	if entity.type == "entity-ghost" then
 		M.set_tags(entity, data.S)
 		return -- data is not in storage for ghost entities
+	end
+	
+	if not sel_changed_only then
+		M.set_dyn_filter(data, data.S.dyn_text)
 	end
 	
 	if data.S.mode == "comms" then
@@ -586,26 +683,67 @@ end
 
 ---@param data RadarData
 ---@param entity LuaEntity
----@return PlatformData?, integer? idx
+---@param wire defines.wire_connector_id
+---@param idx integer
+---@return PlatformData?, integer?
+local function select_from_filtered_platform_list(data, entity, wire, idx)
+	local pattern = data.dyn_pattern
+	local param_sig = data.dyn_pattern_signal
+	local param
+	
+	if param_sig then
+		param = entity.get_signal(param_sig, wire)
+		pattern = data.dyn_pattern_format:format(param)
+	end
+	---@cast pattern -nil
+	
+	-- TODO: could cache the filtered list, if we get the invalidation right
+	local list = get_platform_list(data)
+	local filtered = {}
+	local counter = 1
+	for i=1,#list do
+		local item = list[i]
+		if item.name:find(pattern) then
+			filtered[counter] = item
+			counter = counter + 1
+		end
+	end
+	
+	if idx > 0 then
+		return filtered[idx], param
+	end
+	
+	-- no index, so select first if filtered down to one
+	if #filtered == 1 then
+		return filtered[1], param
+	end
+	return nil
+end
+
+---@param data RadarData
+---@param entity LuaEntity
+---@return PlatformData?, integer? idx, integer? param
 local function dyn_select_platform(data, entity)
 	local S = data.S
 	local wire = defines.wire_connector_id[S.dyn]
+	assert(wire ~= nil)
 	
-	if wire then
-		-- list index has priority to enable easy iteration even if dynamic select wire is same as output wire
-		local idx = entity.get_signal(SIG_LIST_IDX, wire)
-		if idx > 0 then
-			local list = M.get_platform_list(data)
-			
-			local plat_data = list[idx]
-			return plat_data, idx
-		end
-		
-		local id = entity.get_signal(SIG_PLAT_ID, wire)
-		if id > 0 then
-			local plat_data = storage.platforms[id]
-			return plat_data
-		end
+	-- index selection overrides ID selection to enable iteration when ID ends up on input wire
+	local idx = entity.get_signal(SIG_LIST_IDX, wire)
+	if data.dyn_pattern then
+		local result, param = select_from_filtered_platform_list(data, entity, wire, idx)
+		-- similar to selection by index of of range should not fall back to ID
+		-- we should not fall back here even if we had no idx,
+		-- as user could be trying to select via dyn_pattern_signal=0
+		return result, idx, param -- return idx or count or both?
+	elseif idx > 0 then
+		local list = get_platform_list(data)
+		return list[idx], idx
+	end
+	
+	local id = entity.get_signal(SIG_PLAT_ID, wire)
+	if id > 0 then
+		return storage.platforms[id]
 	end
 	
 	return nil
@@ -616,17 +754,28 @@ function M.poll_dyn_select(data)
 	local entity = data.entity
 	if not entity.valid then return end
 	
-	local new_sel, idx = dyn_select_platform(data, entity)
+	local new_sel, idx, param = dyn_select_platform(data, entity)
 	
-	-- selected new platform, or selected via different signal
-	-- (same signal can have platform change because orbital filter)
-	-- same platform still requires selected signal output to be updated (TODO: could latch this information?)
-	if new_sel == data.S.selected_platform and idx == data.sel_idx then
+	-- selected new platform, or selected via different index
+	-- same index can have platform change because orbital filter
+	-- same platform might still require selected index output to be updated
+	if new_sel == data.S.selected_platform and
+	   idx == data.sel_idx and
+	   param == data.dyn_param then
+		return
+	end
+	-- fix gui select being glitchy due to signal propagation still seeing pre-selection for 2 ticks
+	-- this assumes poll rate > 2 ticks
+	if data.sel_idx_from_gui then
+		data.sel_idx_from_gui = nil
 		return
 	end
 	
+	-- we want to only trigger switch pulse if output actually changes
+	assert(data.S.selected_platform ~= new_sel or data.sel_idx ~= idx or param ~= data.dyn_param)
 	data.S.selected_platform = new_sel
 	data.sel_idx = idx -- keep indx even if platform not found for change detect
+	data.dyn_param = param
 	
 	--entity.surface.play_sound{ path="utility/entity_settings_pasted", position=entity.position, volume_multiplier=1.25, override_sound_type="game-effect" }
 	--entity.surface.play_sound{ path="utility/smart_pipette", position=entity.position, volume_multiplier=5.0, override_sound_type="game-effect" }

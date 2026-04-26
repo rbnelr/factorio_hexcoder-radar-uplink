@@ -45,12 +45,20 @@ local W = defines.wire_connector_id
 local W_circG = W.circuit_green
 local HIDDEN = defines.wire_origin.script
 
+--[[
 local SIG_PLAT_ID                = {type="virtual", name="signal-P", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_PROGRESS_PERCENT  = {type="virtual", name="signal-T", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_PROGRESS_DISTANCE = {type="virtual", name="signal-D", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_SPEED             = {type="virtual", name="signal-V", quality="normal"} ---@type SignalFilter
 local SIG_PLAT_INV_SLOTS         = {type="virtual", name="signal-S", quality="normal"} ---@type SignalFilter
 local SIG_ORBIT_ID               = {type="virtual", name="signal-O", quality="normal"} ---@type SignalFilter
+]]
+local SIG_PLAT_ID                = "signal-P" ---@type SignalFilter
+local SIG_PLAT_PROGRESS_PERCENT  = "signal-T" ---@type SignalFilter
+local SIG_PLAT_PROGRESS_DISTANCE = "signal-D" ---@type SignalFilter
+local SIG_PLAT_SPEED             = "signal-V" ---@type SignalFilter
+local SIG_PLAT_INV_SLOTS         = "signal-S" ---@type SignalFilter
+local SIG_ORBIT_ID               = "signal-O" ---@type SignalFilter
 
 ---@return Platforms
 function Platforms.new()

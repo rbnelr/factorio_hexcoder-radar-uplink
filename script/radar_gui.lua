@@ -55,23 +55,22 @@ end
 ---@param gui OpenGui
 ---@param data RadarData
 local function gui_update_platform_list(gui, data)
-	local list = radars.get_platform_list(data)
-	
 	local gui_names = { "[color=#a0a0a0][font=default-small]ID    [/font][None][/color]" }
 	local gui_items = { nil }
 	local idx = 2 -- next insert index
 	local sel_idx = nil
 	local sel = data.S.selected_platform
 	
-	for _, plat in pairs(list) do
+	for _, plat, display_name in radars.get_platform_list_filtered_for_gui(data) do
 		local pl = plat.platform
 		if pl and pl.valid then -- platforms in list should not be invalid, but check anyway
 			plat.name = pl.name -- no rename event so do this here?
+			display_name = display_name or pl.name
 			
 			local suffix = ""
 			if pl.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000](Scheduled for deletion)[/color]" end
 			
-			gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color]%s%s", pl.index, pl.name, suffix)
+			gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color]%s%s", pl.index, display_name, suffix)
 			gui_items[idx] = plat
 			
 			if sel == plat then
@@ -85,13 +84,12 @@ local function gui_update_platform_list(gui, data)
 		if sel == nil then
 			sel_idx = 1 -- select [None] in ui
 		else
-			-- add fake entry at the end to show what was selected despite not showing in ui, as the selection stays
+			-- add fake entry at the end to show what was selected despite not listed, as the selection stays
 			sel_idx = idx
 			local pl = sel.platform
 			gui_items[idx] = sel
 			if pl.valid then
-				-- Not in list because not in orbit
-				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not in orbit)[/color]", pl.index, pl.name)
+				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not listed)[/color]", pl.index, pl.name)
 			else
 				-- Not in list because it must have been deleted, don't silently pretend nothing was selected!
 				-- index not safe to read if not valid? despite the fact that it is unique and likely still there?
@@ -209,7 +207,6 @@ local function gui_state_changed(event)
 	-- minizing should probably be in refresh_radar, but it's convenient here and avoids some data/ui desyncs
 	local S = {}
 	S.selected_platform = data.S.selected_platform -- take previous selection instead of pulling from ui list just before we update it
-	data.S = S
 	
 	S.mode = update_radiobuttons(refs, UI_MODES, event.element)
 	
@@ -219,6 +216,13 @@ local function gui_state_changed(event)
 	if not refs.dyn_enable.state then S.dyn = nil
 	elseif refs.dynR.state then S.dyn = "circuit_red"
 	else                        S.dyn = "circuit_green" end
+	S.dyn_text = S.dyn and refs.dyn_text.text
+	
+	if S.dyn_text ~= data.S.dyn_text then
+		radars.set_dyn_filter(data, S.dyn_text)
+	end
+	
+	data.S = S
 	
 	if S.mode == "comms" then
 		--S.selected_channel = gui.drop_down_channels[gui.refs.ch_drop_down.selected_index]
@@ -276,7 +280,10 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 		
 	else
 		data.S.selected_platform = gui.sel_items[event.element.selected_index]
-		data.sel_idx = event.element.selected_index
+		-- this can be a bit glitchy, maybe because the output wire takes 2 ticks to change and poll_dyn_select switches us back?
+		-- could override first poll_dyn_select after gui selects
+		data.sel_idx = event.element.selected_index-1
+		data.sel_idx_from_gui = true
 		
 		gui_update_platform_list(gui, data) -- update list so that fake entries disappear
 	end
@@ -292,9 +299,8 @@ script.on_event(defines.events.on_gui_text_changed, function(event)
 	assert(data.entity and data.entity.valid)
 	
 	if event.element.name == "dyn_text" then
-		local text = event.element.text
-		local trimmed = text:match "^%s*(.-)%s*$"
-		data.S.dyn_text = string.len(trimmed) > 0 and trimmed or nil
+		local dyn_text = data.S.dyn and event.element.text
+		radars.set_dyn_filter(data, dyn_text)
 		
 		if data.S.mode == "comms" then
 			
@@ -304,28 +310,6 @@ script.on_event(defines.events.on_gui_text_changed, function(event)
 	end
 	
 	radars.refresh_radar(data, true)
-end)
-script.on_event(defines.events.on_gui_confirmed, function(event)
-	local gui = storage.open_guis[event.player_index]
-	if not gui then return end
-	local refs = gui.refs
-	local data = gui.data
-	assert(data.entity and data.entity.valid)
-	
-	-- reacting to on_gui_text_changed might be cooler
-	----game.print("on_gui_confirmed: ".. serpent.block(event))
-	--if event.element.name == "dyn_text" then
-	--	data.S.dyn_text = refs.dyn_text.text
-	--	radars.refresh_radar(data, true)
-	--elseif event.element.name == "ch_name" then
-	--	
-	--	--local ch = storage.channels.map[data.S.selected]
-	--	--if ch then
-	--	--	ch.name = refs.ch_name.text
-	--	--end
-	--	
-	--	--radar_gui_update_channels(gui, data)
-	--end
 end)
 
 script.on_event(defines.events.on_gui_click, function(event)

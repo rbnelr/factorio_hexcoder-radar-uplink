@@ -87,7 +87,7 @@ script.on_nth_tick(12, function(event)
 end)
 
 script.on_event(defines.events.on_tick, function(event)
-	if DEBUG then
+	if DEBUG or storage._was_DEBUG then
 		if not _did_reset then
 			migrations.migrate_less0_1_4()
 			_did_reset = true
@@ -239,6 +239,7 @@ function migrations.init()
 	storage.channels = { next_id=1, map={}, surfaces={} }
 	storage.poll_power_check = myutil.TickList.new()
 	storage.poll_dyn_select = myutil.TickList.new()
+	storage._was_DEBUG = DEBUG or nil
 	
 	local ch = radar_channels.create_new_channel()
 	ch.name = "[Global]"

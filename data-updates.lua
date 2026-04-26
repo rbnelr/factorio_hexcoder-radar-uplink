@@ -1,14 +1,20 @@
+local meld = require("__core__.lualib.meld")
+
 mod_name = "hexcoder_radar_uplink-"
 local dbg = settings.startup["hexcoder_radar_uplink-debug"].value
 
-local radar = data.raw["radar"]["radar"]
--- override default auto-connect logic
--- would have updated wire_origin.radar connection manually, but can't change it from lua
--- so replicate this behavior manually via wire_origin.script
-radar.connects_to_other_radars = false
-data.raw["radar"]["radar"] = radar
+meld(data.raw["radar"]["radar"], {
+	-- override default auto-connect logic
+	-- would have updated wire_origin.radar connection manually, but can't change it from lua
+	-- so replicate this behavior manually via wire_origin.script
+	connects_to_other_radars = false
+})
 
-local function make_phantom(thing)
+local function make_phantom(source, new_name)
+	local thing = util.table.deepcopy(source)
+	
+	thing.name = new_name
+	
 	thing.flags = {"not-on-map",
 		"not-rotatable", "not-flammable", "not-repairable",
 		"not-deconstructable", "not-blueprintable", "no-copy-paste", "not-upgradable",
@@ -28,6 +34,11 @@ local function make_phantom(thing)
 	thing.open_sound = nil
 	thing.close_sound = nil
 	thing.impact_category = nil
+	thing.working_sound = nil
+	
+	if thing.energy_source then
+		thing.energy_source = { type = "void" }
+	end
 	
 	if dbg then
 		--sets the variable, but does not actually render higher, likely hardcoded for combinators etc.
@@ -68,25 +79,14 @@ local function make_phantom(thing)
 		thing.or_symbol_sprites = nil
 		thing.xor_symbol_sprites = nil
 	end
+	
+	return thing
 end
 
-local cc = util.table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
-cc.name = mod_name.."cc"
-make_phantom(cc)
-
-local dc = util.table.deepcopy(data.raw["decider-combinator"]["decider-combinator"])
-dc.name = mod_name.."dc"
-dc.energy_source = { type = "void" }
-make_phantom(dc)
-
-local ac = util.table.deepcopy(data.raw["arithmetic-combinator"]["arithmetic-combinator"])
-ac.name = mod_name.."ac"
-ac.energy_source = { type = "void" }
-make_phantom(ac)
-
-local pc = util.table.deepcopy(data.raw["proxy-container"]["proxy-container"])
-pc.name = mod_name.."pc"
-make_phantom(pc)
+local cc = make_phantom(data.raw["constant-combinator"]["constant-combinator"], mod_name.."cc")
+local dc = make_phantom(data.raw["decider-combinator"]["decider-combinator"], mod_name.."dc")
+local ac = make_phantom(data.raw["arithmetic-combinator"]["arithmetic-combinator"], mod_name.."ac")
+local pc = make_phantom(data.raw["proxy-container"]["proxy-container"], mod_name.."pc")
 
 data:extend({cc, dc, ac, pc})
 
