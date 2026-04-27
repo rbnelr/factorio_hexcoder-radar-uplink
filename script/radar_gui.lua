@@ -113,10 +113,10 @@ local function gui_update_vis_en(gui)
 	local dyn = refs.dyn_enable.state
 	refs.dynR.enabled = dyn
 	refs.dynG.enabled = dyn
-	refs.sel_orbit_only.visible = dyn and mode == "platforms"
-	refs.dyn_text.visible = dyn
 	refs.dyn_flow1.visible = dyn and mode == "platforms"
 	refs.dyn_flow2.visible = dyn
+	refs.dyn_flow3.visible = dyn
+	refs.sel_orbit_only.visible = mode == "platforms"
 	
 	--refs.comms_pane.visible = mode == "comms"
 	refs.pl_config.visible = mode == "platforms"
@@ -144,9 +144,12 @@ local function radar2gui(gui, data)
 	
 	refs.dyn_enable.state = S.dyn ~= nil
 	local dyn = S.dyn or radars.defaults.dyn
-	refs.dynR.state = dyn == "circuit_red"
+	refs.dynR.state = dyn.wire == "circuit_red"
 	refs.dynG.state = not refs.dynR.state
-	refs.dyn_text.text = S.dyn_text or ""
+	refs.dynID.state = dyn.id_sel
+	refs.dynIdx.state = dyn.idx_sel
+	refs.dynPulse.state = dyn.switch_pulse
+	refs.dyn_text.text = dyn.text
 	
 	-- comms mode
 	
@@ -197,7 +200,7 @@ end
 local function gui_state_changed(event)
 	local gui = storage.open_guis[event.player_index]
 	if not gui then return end
-	game.print("gui_state_changed: ".. serpent.block(event))
+	--game.print("gui_state_changed: ".. serpent.block(event))
 	local refs = gui.refs
 	local data = gui.data
 	assert(data.entity and data.entity.valid)
@@ -214,13 +217,16 @@ local function gui_state_changed(event)
 	if event.element.name == "dynR" then refs.dynG.state = false end
 	if event.element.name == "dynG" then refs.dynR.state = false end
 	if not refs.dyn_enable.state then S.dyn = nil
-	elseif refs.dynR.state then S.dyn = "circuit_red"
-	else                        S.dyn = "circuit_green" end
-	S.dyn_text = S.dyn and refs.dyn_text.text
-	
-	if S.dyn_text ~= data.S.dyn_text then
-		radars.set_dyn_filter(data, S.dyn_text)
+	else
+		S.dyn = {}
+		if refs.dynR.state then S.dyn.wire = "circuit_red"
+		else                    S.dyn.wire = "circuit_green" end
+		S.dyn.id_sel = refs.dynID.state
+		S.dyn.idx_sel = refs.dynIdx.state
+		S.dyn.switch_pulse = refs.dynPulse.state
+		S.dyn.text = refs.dyn_text.text
 	end
+	
 	
 	data.S = S
 	
@@ -256,13 +262,18 @@ local function gui_state_changed(event)
 		end
 		S.read = read
 		
-		-- mode or sel_orbit_only could have changed
-		gui_update_platform_list(gui, data) -- do last, so settings are fully rebuilt
 	end
 	
 	gui_update_vis_en(gui)
 	
 	radars.refresh_radar(data)
+	
+	if S.mode == "comms" then
+		
+	else
+		-- mode or sel_orbit_only could have changed
+		gui_update_platform_list(gui, data) -- do after data is final
+	end
 end
 script.on_event({
 	defines.events.on_gui_checked_state_changed,
@@ -281,7 +292,7 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 	else
 		data.S.selected_platform = gui.sel_items[event.element.selected_index]
 		-- this can be a bit glitchy, maybe because the output wire takes 2 ticks to change and poll_dyn_select switches us back?
-		-- could override first poll_dyn_select after gui selects
+		-- so override first poll_dyn_select after gui selects
 		data.sel_idx = event.element.selected_index-1
 		data.sel_idx_from_gui = true
 		
@@ -347,6 +358,25 @@ local function get_window_def()
 	
 	local tick2 = {"tooltip.hexcoder_radar_uplink-tick2_suffix"}
 	
+	-- TODO: move to strings.cfg
+	local dyn_enable_tt="Auto-select via circuit signal\nSelection is not processed every tick\nhold the signal to switch and keep it selection\nSelection via index has priority to allow automatic iteration"
+	local dyn_wire_tt="Circuit wire used for dynamic selection\nBe aware of platform read signals interfering"
+	
+	local dyn_idx_lbl = "[virtual-signal=signal-number-sign][font=default-small] via index[/font]"
+	local dyn_id_lbl = "[virtual-signal=signal-P][font=default-small] via ID[/font]"
+	local dyn_pulse_lbl = "[virtual-signal=signal-rightwards-leftwards-arrow][font=default-small] switch pulse[/font]"
+	
+	local dyn_idx_tt = "A positive [virtual-signal=signal-number-sign] signal will select from the list by index\nIndices start at 1\nIndices out of range (including 0) will select [None]\nThe filtered list is taken into account"
+	local dyn_id_tt = "A positive [virtual-signal=signal-P] signal will select platforms directly by ID\nCan select unlisted platforms\nInvalid IDs will select [None]\nThe selected index is output alongside the status read option for platforms (TODO: for channels)\nIf selected index is on the same wire as Dynamic Select, you can connect a combinator outputting an additional [virtual-signal=signal-number-sign]=1 to automatically iterate the list"
+	local dyn_pulse_tt = "Optional Pulse output on the tick the selected signals change"
+	local dyn_text_tt="Filter the list to entires containing this text\n'{}' acts a wildcard\nLetter codes like '{X}' will be replaced by the corresponding signal [virtual-signal=signal-X]\nIf the list is filtered down to only a single entry it will be selected and ignore [virtual-signal=signal-number-sign]\nYou can use this to select entries with your custom numbering scheme"
+	
+	local all_platforms_tt = "List all platforms in ID order\nwhich is the order they were built in"
+	local orbiting_tt = "List only platforms in orbit of planet\nRadars on platforms can also read platforms in their current orbit\nListed in order of arrival at planet"
+	
+	local pl_std_tt="Read unfulfilled requests"
+	local pl_raw_tt="Read requests and more (interplanetary reads possible)"
+	
 	local function circuit_enable(name, caption, tooltip, tooltip_suffix)
 		return gui_hflow{}:add{
 			GUI{type="label", caption=caption, tooltip={"", tooltip, "\n", tooltip_suffix}},
@@ -391,47 +421,33 @@ local function get_window_def()
 	--		tooltip="Does this channel connect to all surfaces?\n(Can be disabled in settings)" },
 	--}
 	
-	-- TODO: move to strings.cfg
-	local dyn_text1 = "[virtual-signal=signal-P][font=default-small] select via platform ID[/font]"
-	local dyn_text2 = "[virtual-signal=signal-number-sign][font=default-small] select via list index[/font]"
-	
-	local id_sel_tt = "A positive [virtual-signal=signal-P] signal will select platforms directly by ID\nCan select unlisted platforms\nInvalid IDs will select [None]"
-	local idx_sel_tt = "A positive [virtual-signal=signal-number-sign] signal will select from the list by index\nInvalid indices will select [None]"
-	
-	local all_platforms_tt = "List all platforms in ID order"
-	local orbiting_tt = "List only platforms in orbit of planet\nRadars on platforms can also read platforms in their current orbit\nListed in order of arrival at planet"
-	
-	local dyn_enable_tt="Auto-select via circuit signal\nThe selection is only kept as long as the signal is held\nSelection is not processed every tick\nPlatform ID [virtual-signal=signal-P] selection has priority over list index [virtual-signal=signal-number-sign]\nHint: Platform IDs [virtual-signal=signal-P] returned by the status read option can be fed back through a combinator to lock a selection to a platform after it was picked by index"
-	local dyn_text_tt="Filter the list via text\nThe text can be contained anywhere in the name\n'*' acts a general wildcard\nLetter codes like '{X}' act as a number from the corresponding signal [virtual-signal=signal-X]"
-	
-	local pl_std_tt="Simple request read"
-	local pl_raw_tt="Raw request read (interplanetary reads possible)"
-	
 	local dyn_pane = gui_vflow{name="dyn_pane"}:add{
 		gui_hflow{stlye={bottom_margin=5}}:add{
 			GUI{type="checkbox", name="dyn_enable", caption="Dynamic Select", state=false,
 			    style={base="caption_checkbox"}, tooltip=dyn_enable_tt},
 			GUI{type="empty-widget", style={horizontally_stretchable=true}},
-			GUI{type="radiobutton", name="dynR", caption={"gui-network-selector.red-label"}, state=false},
-			GUI{type="radiobutton", name="dynG", caption={"gui-network-selector.green-label"}, state=false},
+			GUI{type="radiobutton", name="dynR", caption={"gui-network-selector.red-label"}, tooltip=dyn_wire_tt, state=false},
+			GUI{type="radiobutton", name="dynG", caption={"gui-network-selector.green-label"}, tooltip=dyn_wire_tt, state=false},
 		},
 		
-		gui_hflow{name="dyn_flow1"}:add{
-			GUI{type="label", caption=dyn_text1, tooltip=id_sel_tt},
-			--GUI{type="empty-widget", style={horizontally_stretchable=true}},
-			--GUI{type="label", caption=dyn_text2, tooltip=idx_sel_tt},
+		gui_hflow{name="dyn_flow1", style={horizontal_spacing=20}}:add{
+			GUI{type="checkbox", name="dynIdx", caption=dyn_idx_lbl, tooltip=dyn_idx_tt, state=false},
+			GUI{type="checkbox", name="dynID", caption=dyn_id_lbl, tooltip=dyn_id_tt, state=false},
 		},
-		gui_hflow{name="dyn_flow2"}:add{
-			GUI{type="label", caption=dyn_text2, tooltip=idx_sel_tt},
+		
+		gui_hflow{name="dyn_flow2", style={horizontal_spacing=20}}:add{
+			GUI{type="checkbox", name="dynPulse", caption=dyn_pulse_lbl, tooltip=dyn_pulse_tt, state=false},
 			GUI{type="empty-widget", style={horizontally_stretchable=true}},
-			--GUI{type="checkbox", name="dyn_default_first", caption="Default First", state=false},
-			--GUI{type="empty-widget", style={horizontally_stretchable=true}},
 			GUI{type="switch", name="sel_orbit_only", switch_state="left", allow_none_state=false,
+					--style={top_margin=4}, -- doesn't affect the captions
 					left_label_caption="All", left_label_tooltip=all_platforms_tt,
 					right_label_caption="Orbiting", right_label_tooltip=orbiting_tt},
 		},
 		
-		GUI{type="textfield", name="dyn_text", text="", tooltip=dyn_text_tt, style="stretchable_textfield"},
+		gui_hflow{name="dyn_flow3", style={horizontal_spacing=10}}:add{
+			GUI{type="label", caption="Filtered", tooltip=dyn_text_tt, style={top_margin=4}},
+			GUI{type="textfield", name="dyn_text", text="", tooltip=dyn_text_tt, style="stretchable_textfield"},
+		}
 	}
 	
 	local pl_config = gui_vflow{name="pl_config"}:add{

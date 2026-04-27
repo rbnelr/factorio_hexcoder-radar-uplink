@@ -118,7 +118,7 @@ for _, event in pairs({
 	defines.events.script_raised_revive,
 	defines.events.on_entity_cloned,
 }) do
-	script.on_event(event, on_created_entity, {{filter = "type", type = "radar"}, {filter = "name", name = "radar"}})
+	script.on_event(event, on_created_entity, {{filter = "type", type = "radar"}, {filter = "name", name = "radar", mode="and"}})
 end
 -- TODO: handle script_raised_teleported ? Likely super rare but easy to handle (tempS=data.S, delete_radar + init_radar(, tempS))
 

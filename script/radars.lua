@@ -9,12 +9,6 @@
 	refresh_radar fully updates circuits to correspond to settings
 ]]
 
--- TODO: INFO signal that is included in requests makes sense for std read mode, as user might not be interested in status,
--- just in unfulfilled requests of platform if in orbit, and info helps to not get confused if requests zero or not in orbit
--- but probably should not be sent when in raw mode (move it into combinator, not on platform CC)
--- it could be annoying if it's something to filter out, but the alternative might be filtering out all status signals if you want it on a single wire
--- could just remove it and require users checking status, or make it customizable, maybe a no-info signals is more useful anyway?
-
 ---@class (exact) RadarData
 ---@field id unit_number
 ---@field entity LuaEntity
@@ -23,16 +17,16 @@
 -- Hidden combinators that connect to platform CCs, store red input wire directly for efficiency, entity is .owner
 ---@field hidden_circ? table<string, LuaEntity>
 ---@field ccPulseCtrl? LuaConstantCombinatorControlBehavior
----@field ccSelSec1? LuaLogisticSection
----@field dcCheckR? LuaWireConnector
+---@field ccSelSec1?   LuaLogisticSection
+---@field dcCheckR?    LuaWireConnector
 ---@field delayStatR?  LuaWireConnector
 ---@field delayReqR?   LuaWireConnector
 ---@field delayReqG?   LuaWireConnector
 ---@field delayOtwR?   LuaWireConnector
 ---@field delayInvR?   LuaWireConnector
----@field sel_idx? integer if selected by list index, keep outputting index for iteration setups with dynamic selection
+---@field sel_idx?          integer if selected by list index, keep outputting index for iteration setups with dynamic selection
+---@field dyn_param?        integer
 ---@field sel_idx_from_gui? boolean
----@field dyn_param? integer
 -- names are filtered using dyn_pattern in the gui to show all possible matches (showing all intergers for {X})
 -- if '{X}' appears  dyn_pattern_format:format(get_signal(dyn_pattern_signal))  is used during actual selection
 ---@field dyn_pattern? string -- used for filtering candiates
@@ -52,7 +46,7 @@
 ---@field sel_orbit_only? boolean Fiter platform list to just platforms in orbit? (Also affects selection by index)
 ---@field selected_channel? channel_id
 ---@field selected_platform? PlatformData Selected platform
----@field dyn? "circuit_red"|"circuit_green" -- probably not safe to put defines in storage
+---@field dyn? DynamicSelect
 ---@field dyn_text? string
 ---@field read_mode? "std"|"raw"
 ---@field read? ReadStd|ReadRaw
@@ -183,9 +177,22 @@ local M = {}
 ---@field R boolean -- red circuit
 ---@field G boolean -- green circuit
 
+---@class DynamicSelect
+---@field wire "circuit_red"|"circuit_green" -- use string as it is probably not safe to put defines in storage
+---@field id_sel boolean
+---@field idx_sel boolean
+---@field switch_pulse boolean
+---@field text string
+
 M.defaults = {
 	sel_orbit_only = true,
-	dyn = "circuit_red",
+	dyn = { ---@type DynamicSelect
+		wire = "circuit_red",
+		id_sel = true,
+		idx_sel = true,
+		switch_pulse = true,
+		text = "",
+	},
 	std = { ---@type ReadStd
 		Sta = { R=true, G=true }, -- R, G
 		Req = { R=true, G=true },
@@ -286,17 +293,22 @@ end
 ---@param data RadarData
 ---@param text? string
 function M.set_dyn_filter(data, text)
-	data.S.dyn_text = text
+	local dyn = data.S.dyn
+	if dyn then
+		dyn.text = text or ""
+	end
 	
 	text = text and text:match("^%s*(.-)%s*$")
 	
-	if not (text and string.len(text) > 0) then
+	if not (dyn and text and string.len(text) > 0) then
 		data.dyn_pattern = nil
 		data.dyn_pattern_format = nil
 		data.dyn_pattern_signal = nil
 		data.dyn_param = nil
 		return
 	end
+	
+	dyn.text = text
 	
 	-- escape   % ^ $ . * + - ? [ ] ( )   in user string for final find/match (before we add '.-' or other patterns)!
 	text = text:gsub("[%%%^%$%.%*%+%-%?%[%]%(%)]", "%%%0")
@@ -552,18 +564,21 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		delayInvR.disconnect_all(HIDDEN)
 	end
 	
+	local dyn = S.dyn
 	local pulse = data.ccPulseCtrl ---@cast pulse -nil
 	local selCC = data.ccSelSec1 ---@cast selCC -nil
 	
 	-- trigger switch pulse
-	pulse.enabled = not pulse.enabled
+	if dyn and dyn.switch_pulse then
+		pulse.enabled = not pulse.enabled
+	end
 	
 	local plat = S.selected_platform
 	
 	-- set sel_idx on CC
 	-- 0 if platform not found to enable easy iteration
 	local filters = selCC.filters
-	filters[1].min = plat and S.dyn and data.sel_idx or 0
+	filters[1].min = plat and dyn and data.sel_idx or 0
 	if data.dyn_pattern_signal then
 		local filter = filters[2] or {}
 		filter.value = data.dyn_pattern_signal.name
@@ -615,7 +630,8 @@ function M.refresh_radar(data, sel_changed_only)
 	end
 	
 	if not sel_changed_only then
-		M.set_dyn_filter(data, data.S.dyn_text)
+		local dyn = data.S.dyn
+		M.set_dyn_filter(data, dyn and dyn.text)
 	end
 	
 	if data.S.mode == "comms" then
@@ -724,12 +740,14 @@ end
 ---@param entity LuaEntity
 ---@return PlatformData?, integer? idx, integer? param
 local function dyn_select_platform(data, entity)
-	local S = data.S
-	local wire = defines.wire_connector_id[S.dyn]
+	local dyn = data.S.dyn
+	assert(dyn ~= nil)
+	local wire = defines.wire_connector_id[dyn.wire]
 	assert(wire ~= nil)
 	
 	-- index selection overrides ID selection to enable iteration when ID ends up on input wire
-	local idx = entity.get_signal(SIG_LIST_IDX, wire)
+	local idx = dyn.idx_sel and entity.get_signal(SIG_LIST_IDX, wire) or 0
+	
 	if data.dyn_pattern then
 		local result, param = select_from_filtered_platform_list(data, entity, wire, idx)
 		-- similar to selection by index of of range should not fall back to ID
@@ -741,7 +759,8 @@ local function dyn_select_platform(data, entity)
 		return list[idx], idx
 	end
 	
-	local id = entity.get_signal(SIG_PLAT_ID, wire)
+	local id = dyn.id_sel and entity.get_signal(SIG_PLAT_ID, wire) or 0
+	
 	if id > 0 then
 		return storage.platforms[id]
 	end
@@ -749,6 +768,7 @@ local function dyn_select_platform(data, entity)
 	return nil
 end
 
+-- TODO: profile this by disabling normal polling and running for all radars at once every N ticks inside profiler timer
 ---@param data RadarData
 function M.poll_dyn_select(data)
 	local entity = data.entity

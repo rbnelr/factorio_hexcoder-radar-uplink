@@ -18,7 +18,7 @@ function M.migrate_less0_1_4()
 	---@field sel_orbit_only? boolean
 	---@field selected_channel? channel_id
 	---@field selected_platform? PlatformData|LuaSpacePlatform|platform_index
-	---@field dyn? CircRG|"circuit_red"|"circuit_green"
+	---@field dyn? CircRG|"circuit_red"|"circuit_green"|DynamicSelect
 	---@field dyn_text? string
 	---@field read_mode? "std"|"raw"
 	---@field read? ReadStd|ReadRaw
@@ -43,13 +43,18 @@ function M.migrate_less0_1_4()
 			S.sel_orbit_only = old_data.S.sel_orbit_only
 			
 			local dyn = old_data.S.dyn
-			if type(dyn) == "string" then
-				S.dyn = dyn
-			elseif type(dyn) == "table" then
-				S.dyn = dyn.R and "circuit_red" or dyn.G and "circuit_green" or nil
-			end
-			
-			S.dyn_text = old_data.S.dyn_text
+			--if type(dyn) == "string" then
+			--	S.dyn = util.table.deepcopy(radars.defaults.dyn)
+			--	S.dyn.wire = dyn
+			--elseif type(dyn) == "table" then
+			--	S.dyn = {}
+			--	S.dyn.wire = dyn.R and "circuit_red" or dyn.G and "circuit_green" or "circuit_red"
+			--	S.dyn.id_sel = dyn.id_sel or radars.defaults.dyn.id_sel
+			--	S.dyn.idx_sel = dyn.idx_sel or radars.defaults.dyn.idx_sel
+			--	S.dyn.switch_pulse = dyn.switch_pulse or radars.defaults.dyn.switch_pulse
+			--	S.dyn.text = dyn.text
+			--end
+			S.dyn = dyn
 			
 			if old_data.S.mode == "platforms" then
 				S.read_mode = old_data.S.read_mode or "std"
