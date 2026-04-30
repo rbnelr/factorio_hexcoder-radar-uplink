@@ -103,7 +103,7 @@ function gui_default_frame(name, caption, content)
 		GUI{type="flow", drag_target=name, style={horizontal_spacing=8}}:add{
 			GUI{type="label", caption=caption, style={base="frame_title", top_margin=-3, bottom_margin=3}, ignored_by_interaction=true},
 			GUI{type="empty-widget", style={base="draggable_space_header", height=24, right_margin=4, horizontally_stretchable=true}, ignored_by_interaction=true},
-			GUI{type="sprite-button", name=name.."-window_close_button", style="close_button", sprite="utility/close"}
+			GUI{type="sprite-button", name="default_frame_close_button", style="close_button", sprite="utility/close"}
 		},
 	}:add(content)
 end

@@ -16,7 +16,7 @@
 	-> actually on_entity_logistic_slot_changed does not trigger if a section is toggled, so it's not reliable...
 ]]
 
----@class (exact) PlatformData
+---@class (exact) Platform
 ---@field name string
 ---@field platform LuaSpacePlatform -- should already be built but could be scheduled_for_deletion
 ---@field stat_cc LuaEntity
@@ -27,9 +27,9 @@
 ---@field _prev_progress number?
 
 ---@class Platforms
----@field [platform_index] PlatformData
----@field all_sorted PlatformData[]
----@field orbiting table<string, PlatformData[]>
+---@field [platform_index] Platform
+---@field all_sorted Platform[]
+---@field orbiting table<string, Platform[]>
 ---@field _orbit_id table<string, integer>
 local Platforms = {}
 Platforms.__index = Platforms
@@ -91,7 +91,7 @@ function Platforms.platform_exists(p)
 end
 
 ---@param platform LuaSpacePlatform
----@return PlatformData
+---@return Platform
 function Platforms:init_platform(platform)
 	assert(self.platform_exists(platform))
 	
@@ -200,7 +200,7 @@ end
 -- ground surface has fixed planet
 -- space platform is either in orbit with other platforms or on space_location where only itself counts as nearby
 ---@param surface LuaSurface
----@return PlatformData[]
+---@return Platform[]
 function Platforms:get_orbiting_platform_list(surface)
 	-- LuaPlanet or LuaSpaceLocationPrototype
 	local space_loc = surface.planet or surface.platform.space_location
@@ -245,8 +245,18 @@ function Platforms:get_orbiting_platform_list(surface)
 	return orbiting
 end
 
+---@param data Radar
+---@return Platform[]
+function Platforms:get_list_for_selection(data)
+	if data.S.sel_orbit_only then
+		return self:get_orbiting_platform_list(data.entity.surface)
+	else
+		return self.all_sorted
+	end
+end
+
 ---@param plat LuaSpacePlatform
----@param data? PlatformData
+---@param data? Platform
 function Platforms:update_platform_status(plat, data)
 	if not plat.valid then return end
 	data = data or self[plat.index]
@@ -341,7 +351,7 @@ function Platforms:update_platform_status(plat, data)
 end
 
 ---@param plat LuaSpacePlatform
----@param data? PlatformData
+---@param data? Platform
 function Platforms:update_platform_inv_slots(plat, data)
 	if not plat.valid then return end
 	data = data or self[plat.index]
@@ -355,7 +365,7 @@ function Platforms:update_platform_inv_slots(plat, data)
 end
 
 ---@param plat LuaSpacePlatform
----@param data? PlatformData
+---@param data? Platform
 function Platforms:update_platform_requests_at_planet(plat, data)
 	if not plat.valid then return end
 	data = data or self[plat.index]
@@ -402,7 +412,7 @@ function Platforms:update_platform_requests_at_planet(plat, data)
 end
 
 ---@param plat LuaSpacePlatform
----@param data? PlatformData
+---@param data? Platform
 function Platforms:update_platform_deliveries_on_the_way(plat, data)
 	if not plat.valid then return end
 	data = data or self[plat.index]
@@ -427,7 +437,7 @@ function Platforms:update_platform_deliveries_on_the_way(plat, data)
 	ctrl.sections[1].filters = signals -- could avoid
 end
 
----@param data PlatformData
+---@param data Platform
 function Platforms:poll_platform(data)
 	local plat = data.platform
 	if not plat.valid then return end

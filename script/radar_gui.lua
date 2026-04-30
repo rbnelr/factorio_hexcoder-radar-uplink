@@ -1,60 +1,88 @@
 ---@class OpenGui
 ---@field refs GuiRefs
----@field data RadarData Holds reference to data in storage for opened radar, or independent data if opening gui on ghost entity (created from tags)
----@field sel_items PlatformData[]|nil
+---@field data Radar Holds reference to data in storage for opened radar, or independent data if opening gui on ghost entity (created from tags)
+---@field sel_items Platform[]|nil
 
 local radars = require("script.radars")
-local radar_channels = require("script.radar_channels")
+local channels = require("script.channels")
 require("script.myutil")
 
-local M = {}
+local radar_gui = {}
 
 local UI_MODES
 
---[[
----@param gui OpenGui
----@param data RadarData
-local function gui_update_channels(gui, data)
-	-- In theory this only needs to be updated once per tick, but each player can only have one gui open anyway
-	-- duplicates work in multiplayer, but in theory players could each have different forces!
-	local drop_down_strings = {"[None]"}
-	local drop_down_channels = {0}
-	local counter = 2 -- next channel in list
-	local sel_idx = 1
-	
-	for id, ch in pairs(storage.channels.map) do
-		drop_down_strings[counter] = ch.name
-		drop_down_channels[counter] = ch.id
-		
-		if data.S.selected == id then
-			sel_idx = counter
+---@param name string
+---@param pattern string?
+---@return string? display_name
+local function filter_for_gui(name, pattern)
+	if pattern then
+		-- highlight entire match part of the name in bold yellow for gui
+		local display_name, count = name:gsub(pattern, "[color=#ffff80][font=default-bold]%0[/font][/color]", 1)
+		if count > 0 then
+			return display_name
 		end
-		counter = counter+1
+		return nil -- don't display
+	else
+		return name -- not filtered
 	end
-	
-	drop_down_strings[counter] = "[Create new channel]"
-	drop_down_channels[counter] = -1
-	
-	gui.drop_down_channels = drop_down_channels
-	gui.refs.ch_drop_down.items = drop_down_strings
-	gui.refs.ch_drop_down.selected_index = sel_idx
-	
-	local ch = storage.channels.map[data.S.selected]
-	gui.refs.ch_name.text = ch and ch.name or ""
-	gui.refs.ch_interplanetary.state = ch and ch.is_interplanetary and ALLOW_INTERPL or false
-	
-	local can_edit = ch ~= nil and ch.id > 1 -- can't edit [Global] channel!
-	gui.refs.ch_name.enabled = can_edit
-	gui.refs.ch_delete.enabled = can_edit
-	gui.refs.ch_interplanetary.enabled = can_edit and ALLOW_INTERPL
 end
-]]
 
 -- build platform list depending on mode and settings for gui, including what is currently selected
 -- does not update radar! (data -> gui)
 ---@param gui OpenGui
----@param data RadarData
+---@param data Radar
 local function gui_update_platform_list(gui, data)
+	local gui_names = { "[color=#a0a0a0][font=default-small]ID    [/font][None][/color]" }
+	local gui_items = { nil }
+	local idx = 2 -- next insert index
+	local sel_idx = nil
+	local sel = data.S.selected_platform
+	
+	for _, plat in pairs(storage.platforms:get_list_for_selection(data)) do
+		local display_name = filter_for_gui(plat.name, data.dyn_pattern)
+		local pl = plat.platform
+		if pl and pl.valid and display_name then -- platforms in list should not be invalid, but check anyway
+			plat.name = pl.name -- no rename event so do this here?
+			
+			local suffix = ""
+			if pl.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000](Scheduled for deletion)[/color]" end
+			
+			gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color]%s%s", pl.index, display_name, suffix)
+			gui_items[idx] = plat
+			
+			if sel == plat then
+				sel_idx = idx
+			end
+			idx = idx + 1
+		end
+	end
+	
+	if sel_idx == nil then -- sel not in list, either nothing selected, platform deleted or not in orbit
+		if sel == nil then
+			sel_idx = 1 -- select [None] in ui
+		else
+			-- add fake entry at the end to show what was selected despite not listed, as the selection stays
+			sel_idx = idx
+			local pl = sel.platform
+			gui_items[idx] = sel
+			if pl.valid then
+				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not listed)[/color]", pl.index, pl.name)
+			else
+				-- Not in list because it must have been deleted, don't silently pretend nothing was selected!
+				-- index not safe to read if not valid? despite the fact that it is unique and likely still there?
+				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small] ?    [/font][/color] [color=#b0b0b0]%s (Deleted platform)[/color]", pl.name)
+			end
+		end
+	end
+	
+	gui.refs.sel_list.items = gui_names
+	gui.refs.sel_list.selected_index = sel_idx
+	gui.sel_items = gui_items
+end
+
+---@param gui OpenGui
+---@param data Radar
+local function gui_update_channel_list(gui, data)
 	local gui_names = { "[color=#a0a0a0][font=default-small]ID    [/font][None][/color]" }
 	local gui_items = { nil }
 	local idx = 2 -- next insert index
@@ -113,12 +141,13 @@ local function gui_update_vis_en(gui)
 	local dyn = refs.dyn_enable.state
 	refs.dynR.enabled = dyn
 	refs.dynG.enabled = dyn
-	refs.dyn_flow1.visible = dyn and mode == "platforms"
+	refs.dyn_flow1.visible = dyn
 	refs.dyn_flow2.visible = dyn
 	refs.dyn_flow3.visible = dyn
+	refs.dynID.visible = mode == "platforms"
 	refs.sel_orbit_only.visible = mode == "platforms"
 	
-	--refs.comms_pane.visible = mode == "comms"
+	refs.comms_config.visible = mode == "comms"
 	refs.pl_config.visible = mode == "platforms"
 	
 	if mode == "comms" then
@@ -133,7 +162,7 @@ end
 -- init ui from data or defaults (data -> gui)
 -- this needs to update all invisible ui elements too!
 ---@param gui OpenGui
----@param data RadarData
+---@param data Radar
 local function radar2gui(gui, data)
 	assert(data.entity and data.entity.valid)
 	
@@ -187,7 +216,7 @@ function refresh_all_guis()
 		radar2gui(gui, gui.data)
 	end
 end
----@param data RadarData
+---@param data Radar
 function refresh_gui(data)
 	local gui = storage.open_guis2[data]
 	if gui then
@@ -331,8 +360,8 @@ script.on_event(defines.events.on_gui_click, function(event)
 	local data = gui.data
 	assert(data.entity and data.entity.valid)
 	
-	if event.element.name == "hexcoder_radar_uplink-window_close_button" then
-		M.force_close_gui(event.player_index)
+	if event.element.name == "default_frame_close_button" then
+		radar_gui.force_close_gui(event.player_index)
 	elseif event.element.name == "ch_delete" then
 		--local data = gui.data
 		--
@@ -405,23 +434,7 @@ local function get_window_def()
 		GUI{type="list-box", name="sel_list", style="list_box_under_subheader", items={""}, selected_index=1 },
 	}
 	
-	--local comms_pane = gui_vpane("comms_pane", {vertically_stretchable=true}):add{
-	--	gui_hflow{}:add{
-	--		GUI{type="label", caption="Channel", style={base="caption_label", margin={4,6,0,0}}},
-	--		GUI{type="drop-down", name="ch_drop_down", items={""}, selected_index=1 },
-	--	},
-	--	GUI{type="line", style={margin={8,0,8,0}}},
-	--	gui_hflow{style={bottom_margin=8}}:add{
-	--		GUI{type="label", caption="Name", style={margin={4,6,0,0}}},
-	--		GUI{type="textfield", name="ch_name", text="", tooltip="Rename channel (connected radars stay connected)" }, -- default height 28
-	--		GUI{type="sprite-button", name="ch_delete", style={base="red_button", size={28, 28}, padding={0,0,0,0}},
-	--			sprite="utility/trash", tooltip="Delete channel (universally for all radars)" },
-	--	},
-	--	GUI{type="checkbox", name="ch_interplanetary", caption="Interplanetary", state=false,
-	--		tooltip="Does this channel connect to all surfaces?\n(Can be disabled in settings)" },
-	--}
-	
-	local dyn_pane = gui_vflow{name="dyn_pane"}:add{
+	local dyn_config = gui_vflow{name="dyn_config"}:add{
 		gui_hflow{stlye={bottom_margin=5}}:add{
 			GUI{type="checkbox", name="dyn_enable", caption="Dynamic Select", state=false,
 			    style={base="caption_checkbox"}, tooltip=dyn_enable_tt},
@@ -448,6 +461,31 @@ local function get_window_def()
 			GUI{type="label", caption="Filtered", tooltip=dyn_text_tt, style={top_margin=4}},
 			GUI{type="textfield", name="dyn_text", text="", tooltip=dyn_text_tt, style="stretchable_textfield"},
 		}
+	}
+	
+	local ch_new_tt = "New channel"
+	local ch_pinned_tt = "TODO:"
+	local ch_interpl_tt = "Does this channel connect to other surfaces?\n(TODO: explain restrictions and relays)"
+	local ch_delete_tt = "Delete channel (universally for all radars)"
+	local ch_name_tt = "Rename channel (connected radars stay connected)"
+	
+	local comms_config = gui_vflow{name="comms_config"}:add{
+		gui_hflow{}:add{
+			GUI{type="sprite-button", name="ch_new", style={size={28, 28}, padding={0,0,0,0}},
+				sprite="utility/add_white", tooltip=ch_new_tt },
+			GUI{type="sprite-button", name="ch_pinned", auto_toggle=true, style={size={28, 28}, padding={0,0,0,0}},
+				sprite="utility/track_button_white", tooltip=ch_pinned_tt },
+			--GUI{type="sprite-button", name="ch_interplanetary", auto_toggle=true, style={size={28, 28}, padding={0,0,0,0}},
+			--	sprite="utility/pin_arrow", tooltip="Delete channel (universally for all radars)" },
+			GUI{type="empty-widget", style={horizontally_stretchable=true}},
+			GUI{type="sprite-button", name="ch_delete", style={base="red_button", size={28, 28}, padding={0,0,0,0}},
+				sprite="utility/trash", tooltip=ch_delete_tt },
+		},
+		GUI{type="checkbox", name="ch_interpl", caption="Connect to other surfaces", state=false, tooltip=ch_interpl_tt},
+		gui_hflow{}:add{
+			GUI{type="label", caption="Channel Name", style={margin={4,6,0,0}}},
+			GUI{type="textfield", name="ch_name", text="", style="stretchable_textfield", tooltip=ch_name_tt },
+		},
 	}
 	
 	local pl_config = gui_vflow{name="pl_config"}:add{
@@ -483,9 +521,10 @@ local function get_window_def()
 					mode_pane
 				},
 				gui_vpane("config_pane", {natural_width=350, vertically_stretchable=true, padding={8,10,10,10}}):add{
-					dyn_pane,
+					dyn_config,
 					GUI{type="line", style={margin={8,0,8,0}}},
-					pl_config
+					comms_config,
+					pl_config,
 				}
 			}
 		},
@@ -500,7 +539,7 @@ local window_def = get_window_def()
 local function create_radar_gui(player_index, player, entity)
 	assert(entity and entity.valid)
 	
-	M.force_close_gui(player_index)
+	radar_gui.force_close_gui(player_index)
 	
 	local window, refs = window_def:add_to(player.gui.screen)
 	window.force_auto_center()
@@ -519,7 +558,7 @@ local function create_radar_gui(player_index, player, entity)
 end
 
 ---@param player_index player_index
-function M.force_close_gui(player_index)
+function radar_gui.force_close_gui(player_index)
 	local player = game.get_player(player_index)
 	if player then
 		local existing = player.gui.screen["hexcoder_radar_uplink"]
@@ -577,7 +616,7 @@ end)
 -- called on player.opened=nil, on window close button, on E or Escape press
 script.on_event(defines.events.on_gui_closed, function(event)
 	if event.element and event.element.name == "hexcoder_radar_uplink" then
-		M.force_close_gui(event.player_index)
+		radar_gui.force_close_gui(event.player_index)
 		
 		if not _skip_closing_sound then
 			local player = game.get_player(event.player_index) ---@cast player -nil
@@ -588,12 +627,12 @@ end)
 script.on_event(defines.events.on_player_controller_changed, function(event)
 	-- this fixes 'going into /editor can cause player.opened = nil but gui to still exist'
 	-- on_gui_closed seems to trigger first, so sound still plays, so don't need to actually check controller
-	M.force_close_gui(event.player_index)
+	radar_gui.force_close_gui(event.player_index)
 end)
 
 ---@param player LuaPlayer
 ---@param gui OpenGui
-function M.tick_gui(player, gui)
+function radar_gui.tick_gui(player, gui)
 	-- close custom gui once out of reach
 	if can_open_entity_gui(player, gui.data.entity) then
 		--radar_gui_update_platform_list(gui, gui.data)
@@ -605,4 +644,4 @@ function M.tick_gui(player, gui)
 	end
 end
 
-return M
+return radar_gui

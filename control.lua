@@ -58,9 +58,9 @@ storage = storage
 
 DEBUG = false
 
-local radar_channels = require("script.radar_channels")
 local radars = require("script.radars")
 local Platforms = require("script.platforms")
+local Channels = require("script.channels")
 local radar_gui = require("script.radar_gui")
 local migrations = require("script.migrations")
 local myutil = require("script.myutil")
@@ -158,12 +158,12 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
 	end
 end)
 
-script.on_event({
-	defines.events.on_surface_cleared,
-	defines.events.on_surface_created,
-	defines.events.on_surface_deleted,
-	defines.events.on_surface_imported,
-}, radar_channels.on_surface_event)
+--script.on_event({
+--	defines.events.on_surface_cleared,
+--	defines.events.on_surface_created,
+--	defines.events.on_surface_deleted,
+--	defines.events.on_surface_imported,
+--}, channels.on_surface_event)
 
 local deathrattles = {} ---@type function(EventData.on_object_destroyed)[]
 deathrattles[defines.target_type.entity] = function(event)
@@ -185,7 +185,7 @@ deathrattles[defines.target_type.planet] = function(event)
 	storage.platforms:update_all_platforms_list()
 end
 deathrattles[defines.target_type.surface] = function(event)
-	radar_channels.on_surface_event(event.useful_id)
+	storage.channels:delete_surface(event.useful_id)
 end
 deathrattles[defines.target_type.player] = function(event)
 	radar_gui.force_close_gui(event.useful_id)
@@ -206,7 +206,7 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
 		ALLOW_INTERPL = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
 		
 		radars.refresh_all_radars()
-		radar_channels.update_all_channels_is_interplanetary()
+		storage.channels:update_all_channels_is_interplanetary()
 	else
 		POLL_PERIOD = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
 	end
@@ -219,11 +219,11 @@ end)
 ---@class channel_id : number
 
 ---@class ModStorage
----@field radars table<unit_number, RadarData>
+---@field radars table<unit_number, Radar>
 ---@field platforms Platforms
 ---@field channels Channels
 ---@field open_guis table<player_index, OpenGui>
----@field open_guis2 table<RadarData, OpenGui>
+---@field open_guis2 table<Radar, OpenGui>
 ---@field poll_power_check TickList
 ---@field poll_dyn_select TickList
 
@@ -236,14 +236,10 @@ function migrations.init()
 	storage.open_guis2 = {}
 	storage.radars = {}
 	storage.platforms = Platforms.new()
-	storage.channels = { next_id=1, map={}, surfaces={} }
+	storage.channels = Channels.new()
 	storage.poll_power_check = myutil.TickList.new()
 	storage.poll_dyn_select = myutil.TickList.new()
 	storage._was_DEBUG = DEBUG or nil
-	
-	local ch = radar_channels.create_new_channel()
-	ch.name = "[Global]"
-	ch.is_interplanetary = false
 	
 	storage.platforms:update_all_platforms_list()
 	

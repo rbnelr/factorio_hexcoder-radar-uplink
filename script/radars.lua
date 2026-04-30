@@ -9,7 +9,7 @@
 	refresh_radar fully updates circuits to correspond to settings
 ]]
 
----@class (exact) RadarData
+---@class (exact) Radar
 ---@field id unit_number
 ---@field entity LuaEntity
 ---@field status defines.entity_status Last status for power check
@@ -45,7 +45,7 @@
 ---@field mode "comms"|"platforms" Operation mode, comms for vanilla global channel or named channels, platforms for platform reading
 ---@field sel_orbit_only? boolean Fiter platform list to just platforms in orbit? (Also affects selection by index)
 ---@field selected_channel? channel_id
----@field selected_platform? PlatformData Selected platform
+---@field selected_platform? Platform Selected platform
 ---@field dyn? DynamicSelect
 ---@field dyn_text? string
 ---@field read_mode? "std"|"raw"
@@ -159,9 +159,9 @@ local CHECK_DC_IN_SPACE_PARAMS = {conditions={
 }}
 
 local util = require("util")
-local radar_channels = require("script.radar_channels")
+local channels = require("script.channels")
 
-local M = {}
+local radars = {}
 
 ---@class ReadStd
 ---@field Sta CircRG
@@ -184,7 +184,7 @@ local M = {}
 ---@field switch_pulse boolean
 ---@field text string
 
-M.defaults = {
+radars.defaults = {
 	sel_orbit_only = true,
 	dyn = { ---@type DynamicSelect
 		wire = "circuit_red",
@@ -207,13 +207,13 @@ M.defaults = {
 
 ---@param e LuaEntity?
 ---@return boolean
-function M.is_radar(e)
+function radars.is_radar(e)
 	return e and e.valid and (e.name == "radar" or (e.type == "entity-ghost" and e.ghost_name == "radar")) or false
 end
 
 ---@param ghost LuaEntity|BlueprintEntity
 ---@param S RadarSettings
-function M.set_tags(ghost, S)
+function radars.set_tags(ghost, S)
 	-- make sure selection works across saves
 	local T = util.table.deepcopy(S) --[[@as table]]
 	if T.mode == "comms" then
@@ -231,7 +231,7 @@ end
 ---@param tags table?
 ---@param as_force LuaForce
 ---@return RadarSettings?
-function M.tags_to_settings(tags, as_force)
+function radars.tags_to_settings(tags, as_force)
 	local T = tags and tags["hexcoder_radar_uplink"]
 	if not T then return nil end
 	
@@ -258,16 +258,16 @@ end
 ---@param ghost LuaEntity|BlueprintEntity
 ---@param entity_id unit_number
 ---@return boolean added
-function M.settings_to_tags(ghost, entity_id)
+function radars.settings_to_tags(ghost, entity_id)
 	local data = storage.radars[entity_id]
 	if data then
-		M.set_tags(ghost, data.S)
+		radars.set_tags(ghost, data.S)
 		return true
 	end
 	return false
 end
 
----@param data RadarData
+---@param data Radar
 local function clear_hidden_circ(data)
 	if data.hidden_circ then
 		for _,v in pairs(data.hidden_circ) do
@@ -278,7 +278,7 @@ local function clear_hidden_circ(data)
 end
 
 ---@param id unit_number
-function M.delete_radar(id)
+function radars.delete_radar(id)
 	local data = storage.radars[id]
 	if data then
 		clear_hidden_circ(data)
@@ -290,101 +290,8 @@ function M.delete_radar(id)
 	end
 end
 
----@param data RadarData
----@param text? string
-function M.set_dyn_filter(data, text)
-	local dyn = data.S.dyn
-	if dyn then
-		dyn.text = text or ""
-	end
-	
-	text = text and text:match("^%s*(.-)%s*$")
-	
-	if not (dyn and text and string.len(text) > 0) then
-		data.dyn_pattern = nil
-		data.dyn_pattern_format = nil
-		data.dyn_pattern_signal = nil
-		data.dyn_param = nil
-		return
-	end
-	
-	dyn.text = text
-	
-	-- escape   % ^ $ . * + - ? [ ] ( )   in user string for final find/match (before we add '.-' or other patterns)!
-	text = text:gsub("[%%%^%$%.%*%+%-%?%[%]%(%)]", "%%%0")
-	
-	-- "%X" -> "X", only returns first match
-	local letter_pattern = "{([%w])}" -- lower/uppercase letter or digit
-	local letter = text:match(letter_pattern)
-	local pat, fmt, sig
-	
-	-- allow "{}" as wildcard, and allow mid-typing "{" for smoother gui feedback
-	text = text:gsub("{}", ".-")
-	           :gsub("{$", ".-$")
-	
-	pat = text
-	
-	if letter then
-		sig = {type="virtual", name="signal-"..letter:upper()}
-		
-		pat = text:gsub(letter_pattern, "%%-?%%d+", 1) -- match any integer for gui filtering
-		fmt = text:gsub("%%", "%%%%") -- escape again but for string.format this time, "%" -> "%%"
-		          :gsub(letter_pattern, "%%d", 1) -- format integer for signal-based filtering
-	end
-	
-	data.dyn_pattern = pat
-	data.dyn_pattern_format = fmt
-	data.dyn_pattern_signal = sig
-	
-	game.print(serpent.block({ pat, fmt, fmt and fmt:format(5) }))
-end
-
----@param data RadarData
----@return PlatformData[]
-local function get_platform_list(data)
-	if data.S.sel_orbit_only then
-		return storage.platforms:get_orbiting_platform_list(data.entity.surface)
-	else
-		return storage.platforms.all_sorted
-	end
-end
-
----@alias PlatformIteratorFunc fun(): integer?, PlatformData?, string?
-
----@param data RadarData
----@param list PlatformData[]
----@return PlatformIteratorFunc
-function M.filter_list(data, list)
-	local i = 0
-	return function()
-		while true do
-			if i == #list then
-				return nil
-			end
-			i = i + 1
-			local item = list[i]
-			-- highlight entire match part of the name in bold yellow for gui
-			local matched, count = item.name:gsub(data.dyn_pattern, "[color=#ffff80][font=default-bold]%0[/font][/color]", 1)
-			if count > 0 then
-				return i, item, matched
-			end
-		end
-	end
-end
-
----@param data RadarData
----@return PlatformIteratorFunc|any, any, nil -- syntax ??
-function M.get_platform_list_filtered_for_gui(data)
-	local list = get_platform_list(data)
-	if data.dyn_pattern then
-		return M.filter_list(data, list)
-	else
-		return pairs(list)
-	end
-end
-
 ---@param entity LuaEntity
----@param data RadarData
+---@param data Radar
 ---@param reconfig boolean
 local function refresh_radar_platform_mode(entity, data, reconfig)
 	local radar_surf = entity.surface
@@ -615,9 +522,9 @@ end
 
 -- TODO: refresh is a bad term, this actually reconfigures world state based on configuration data usually coming from ui
 -- -> reconfigure is full data change,  -> reconnect is if only selection has changed and is called by dynamic selection polling after detecting change
----@param data RadarData
+---@param data Radar
 ---@param sel_changed_only? boolean
-function M.refresh_radar(data, sel_changed_only)
+function radars.refresh_radar(data, sel_changed_only)
 	local entity = data.entity
 	if not entity.valid then return end
 	local id = data.id
@@ -625,13 +532,13 @@ function M.refresh_radar(data, sel_changed_only)
 	
 	-- write tags to ghosts on change (ui seems to get a copy, possibly because entity.tags is behind API which copies)
 	if entity.type == "entity-ghost" then
-		M.set_tags(entity, data.S)
+		radars.set_tags(entity, data.S)
 		return -- data is not in storage for ghost entities
 	end
 	
 	if not sel_changed_only then
 		local dyn = data.S.dyn
-		M.set_dyn_filter(data, dyn and dyn.text)
+		radars.set_dyn_filter(data, dyn and dyn.text)
 	end
 	
 	if data.S.mode == "comms" then
@@ -641,7 +548,7 @@ function M.refresh_radar(data, sel_changed_only)
 		refresh_radar_platform_mode(entity, data, not sel_changed_only)
 	end
 	
-	radar_channels.update_radar_channel(data)
+	--channels.update_radar_channel(data)
 	
 	storage.radars[id] = data
 	
@@ -655,8 +562,8 @@ function M.refresh_radar(data, sel_changed_only)
 end
 ---@param entity LuaEntity
 ---@param copy_settings RadarSettings?
----@return RadarData
-function M.init_radar(entity, copy_settings)
+---@return Radar
+function radars.init_radar(entity, copy_settings)
 	assert(entity and entity.valid)
 	
 	local id = entity.unit_number
@@ -666,7 +573,7 @@ function M.init_radar(entity, copy_settings)
 		if copy_settings then
 			S = util.table.deepcopy(copy_settings)
 		else
-			local tags = M.tags_to_settings(entity.tags, entity.force --[[@as LuaForce]])
+			local tags = radars.tags_to_settings(entity.tags, entity.force --[[@as LuaForce]])
 			if tags then -- handle allowing gui from ghost entities
 				S = tags
 			else
@@ -693,16 +600,66 @@ function M.init_radar(entity, copy_settings)
 		end
 	end
 	
-	M.refresh_radar(data)
+	radars.refresh_radar(data)
 	return data
 end
 
----@param data RadarData
+---@param data Radar
+---@param text? string
+function radars.set_dyn_filter(data, text)
+	local dyn = data.S.dyn
+	if dyn then
+		dyn.text = text or ""
+	end
+	
+	text = text and text:match("^%s*(.-)%s*$")
+	
+	if not (dyn and text and string.len(text) > 0) then
+		data.dyn_pattern = nil
+		data.dyn_pattern_format = nil
+		data.dyn_pattern_signal = nil
+		data.dyn_param = nil
+		return
+	end
+	
+	dyn.text = text
+	
+	-- escape   % ^ $ . * + - ? [ ] ( )   in user string for final find/match (before we add '.-' or other patterns)!
+	text = text:gsub("[%%%^%$%.%*%+%-%?%[%]%(%)]", "%%%0")
+	
+	-- "%X" -> "X", only returns first match
+	local letter_pattern = "{([%w])}" -- lower/uppercase letter or digit
+	local letter = text:match(letter_pattern)
+	local pat, fmt, sig
+	
+	-- allow "{}" as wildcard, and allow mid-typing "{" for smoother gui feedback
+	text = text:gsub("{}", ".-")
+	           :gsub("{$", ".-$")
+	
+	pat = text
+	
+	if letter then
+		sig = {type="virtual", name="signal-"..letter:upper()}
+		
+		pat = text:gsub(letter_pattern, "%%-?%%d+", 1) -- match any integer for gui filtering
+		fmt = text:gsub("%%", "%%%%") -- escape again but for string.format this time, "%" -> "%%"
+		          :gsub(letter_pattern, "%%d", 1) -- format integer for signal-based filtering
+	end
+	
+	data.dyn_pattern = pat
+	data.dyn_pattern_format = fmt
+	data.dyn_pattern_signal = sig
+	
+	game.print(serpent.block({ pat, fmt, fmt and fmt:format(5) }))
+end
+
+---@param list Platform[]|Channel[]
+---@param data Radar
 ---@param entity LuaEntity
 ---@param wire defines.wire_connector_id
 ---@param idx integer
----@return PlatformData?, integer?
-local function select_from_filtered_platform_list(data, entity, wire, idx)
+---@return Platform?, integer?
+local function select_from_filtered_platform_list(list, data, entity, wire, idx)
 	local pattern = data.dyn_pattern
 	local param_sig = data.dyn_pattern_signal
 	local param
@@ -714,7 +671,6 @@ local function select_from_filtered_platform_list(data, entity, wire, idx)
 	---@cast pattern -nil
 	
 	-- TODO: could cache the filtered list, if we get the invalidation right
-	local list = get_platform_list(data)
 	local filtered = {}
 	local counter = 1
 	for i=1,#list do
@@ -736,9 +692,9 @@ local function select_from_filtered_platform_list(data, entity, wire, idx)
 	return nil
 end
 
----@param data RadarData
+---@param data Radar
 ---@param entity LuaEntity
----@return PlatformData?, integer? idx, integer? param
+---@return Platform?, integer? idx, integer? param
 local function dyn_select_platform(data, entity)
 	local dyn = data.S.dyn
 	assert(dyn ~= nil)
@@ -749,13 +705,14 @@ local function dyn_select_platform(data, entity)
 	local idx = dyn.idx_sel and entity.get_signal(SIG_LIST_IDX, wire) or 0
 	
 	if data.dyn_pattern then
-		local result, param = select_from_filtered_platform_list(data, entity, wire, idx)
+		local list = storage.platforms:get_list_for_selection(data)
+		local result, param = select_from_filtered_platform_list(list, data, entity, wire, idx)
 		-- similar to selection by index of of range should not fall back to ID
 		-- we should not fall back here even if we had no idx,
 		-- as user could be trying to select via dyn_pattern_signal=0
 		return result, idx, param -- return idx or count or both?
 	elseif idx > 0 then
-		local list = get_platform_list(data)
+		local list = storage.platforms:get_list_for_selection(data)
 		return list[idx], idx
 	end
 	
@@ -769,8 +726,8 @@ local function dyn_select_platform(data, entity)
 end
 
 -- TODO: profile this by disabling normal polling and running for all radars at once every N ticks inside profiler timer
----@param data RadarData
-function M.poll_dyn_select(data)
+---@param data Radar
+function radars.poll_dyn_select(data)
 	local entity = data.entity
 	if not entity.valid then return end
 	
@@ -802,28 +759,28 @@ function M.poll_dyn_select(data)
 	entity.surface.play_sound{ path="hexcoder_radar_uplink-sel-switch-sound1", position=entity.position }
 	entity.surface.play_sound{ path="hexcoder_radar_uplink-sel-switch-sound2", position=entity.position }
 	
-	M.refresh_radar(data, true)
+	radars.refresh_radar(data, true)
 	
 	refresh_gui(data)
 end
 
----@param data RadarData
-function M.poll_radar(data)
+---@param data Radar
+function radars.poll_radar(data)
 	local entity = data.entity
 	if entity.valid then
 	
 		local new_status = entity.status ---@cast new_status -nil
 		if new_status ~= data.status then
 			data.status = new_status
-			M.refresh_radar(data, true)
+			radars.refresh_radar(data, true)
 		end
 	end
 end
 
-function M.refresh_all_radars()
+function radars.refresh_all_radars()
 	for _,data in pairs(storage.radars) do
-		M.refresh_radar(data)
+		radars.refresh_radar(data)
 	end
 end
 
-return M
+return radars

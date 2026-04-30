@@ -1,6 +1,6 @@
 local radars = require("script.radars")
 
-local M = {}
+local migrations = {}
 
 --[[ Migration Notes:
 
@@ -9,7 +9,7 @@ local M = {}
 ]]
 
 -- First attempt at adding migrations
-function M.migrate_less0_1_4()
+function migrations.migrate_less0_1_4()
 	---@class oldRadarData
 	---@field S oldRadarSettings
 	
@@ -17,7 +17,7 @@ function M.migrate_less0_1_4()
 	---@field mode "comms"|"platforms"
 	---@field sel_orbit_only? boolean
 	---@field selected_channel? channel_id
-	---@field selected_platform? PlatformData|LuaSpacePlatform|platform_index
+	---@field selected_platform? Platform|LuaSpacePlatform|platform_index
 	---@field dyn? CircRG|"circuit_red"|"circuit_green"|DynamicSelect
 	---@field dyn_text? string
 	---@field read_mode? "std"|"raw"
@@ -26,14 +26,15 @@ function M.migrate_less0_1_4()
 	local channels = util.table.deepcopy(storage.channels or {}) -- deepcopy just to be safe
 	local old_radars = util.table.deepcopy(storage.radars or {}) --[[@as table<unit_number, oldRadarData>]]
 	
-	M.reset()
+	migrations.reset()
 	
-	storage.channels.next_id = channels.next_id or 1
-	for id,ch in pairs(channels.map) do
-		if type(id) == "number" and id > 1 and ch and ch.name and id < storage.channels.next_id then
-			storage.channels.map[id] = { id=id, name=ch.name, is_interplanetary=ch.is_interplanetary or false }
-		end
-	end
+	--storage.channels.next_id = channels.next_id or 1
+	--for id,ch in pairs(channels.map) do
+	--	if type(id) == "number" and id > 1 and ch and ch.name and id < storage.channels.next_id then
+	--		storage.channels.map[id] = { id=id, name=ch.name, is_interplanetary=ch.is_interplanetary or false }
+	--	end
+	--end
+	
 	for id,data in pairs(storage.radars) do
 		local old_data = old_radars[id]
 		if old_data and old_data.S then
@@ -87,7 +88,7 @@ function M.migrate_less0_1_4()
 end
 
 commands.add_command("hexcoder_radar_uplink-migrate", nil, function(command)
-	M.migrate_less0_1_4()
+	migrations.migrate_less0_1_4()
 end)
 
 script.on_configuration_changed(function(data)
@@ -96,13 +97,13 @@ script.on_configuration_changed(function(data)
 	
 	local old = changes.old_version
 	if not old then
-		M.init()
+		migrations.init()
 		return
 	end
 	
 	if helpers.compare_versions(old, "0.1.4") < 0 then
-		M.migrate_less0_1_4()
+		migrations.migrate_less0_1_4()
 	end
 end)
 
-return M
+return migrations

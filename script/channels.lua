@@ -28,27 +28,33 @@ unsure how channels should work
 ]]
 
 ---@class Channels
----@field next_id channel_id
----@field map table<channel_id, Channel>
 ---@field surfaces table<surface_index, SurfaceChannels>
+local Channels = {}
+Channels.__index = Channels
 
 ---@class Channel
----@field id channel_id
 ---@field name string
----@field is_interplanetary boolean
-
----@class SurfaceChannels
----@field channels table<channel_id, ChannelHubs>
-
----@class ChannelHubs
 ---@field hub LuaEntity
 ---@field link_hub LuaEntity
+---@field is_interpl boolean
+
+---@class SurfaceChannels
+---@field channels Channel[]
+---@field channels_by_name table<string, Channel>
+---@field freelist table<Channel>
 
 local W = defines.wire_connector_id
 -- Hidden wire between radars, can't visualize well using wire_origin.player, because it breaks player wires on disconnect_all(HIDDEN)
 local HIDDEN = defines.wire_origin.script
 
 local M = {}
+
+---@return Channels
+function Channels.new()
+	return setmetatable({ surfaces={} }, Channels)
+end
+
+--[=[
 
 -- simply re-link all link hubs of this channel on all registered surfaces
 -- could be optimized by using actual linked list logic, list of surfaces with radars will be small
@@ -92,11 +98,6 @@ end
 function M.update_is_interplanetary(id)
 	-- Abuse this to switch is_interplanetary, could be done more efficiently
 	update_channel_surface_links(id)
-end
-function M.update_all_channels_is_interplanetary()
-	for id,_ in pairs(storage.channels.map) do
-		M.update_is_interplanetary(id)
-	end
 end
 
 ---@return Channel
@@ -214,7 +215,7 @@ local function channel_switch(entity, id, surface)
 		end
 	end
 end
----@param data RadarData
+---@param data Radar
 function M.update_radar_channel(data)
 	--game.print(">> update_radar_channel: ".. serpent.block(data))
 	
@@ -238,6 +239,19 @@ function M.on_surface_event(event)
 		end
 		storage.channels.surfaces[event.surface_index] = nil
 	end
+end
+
+]=]
+
+function Channels:update_all_channels_is_interplanetary()
+	--for id,_ in pairs(storage.channels.map) do
+	--	M.update_is_interplanetary(id)
+	--end
+end
+
+---@param surf_id surface_index
+function Channels:delete_surface(surf_id)
+	
 end
 
 return M
