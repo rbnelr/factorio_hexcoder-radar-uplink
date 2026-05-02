@@ -130,21 +130,23 @@ end
 -- Mode: set gui state from active mode
 -- LuaGuiElement: handle gui element event (radiobutton click), update gui state, return new active mode
 ---@param activate? Mode|LuaGuiElement
----@return Mode active_mode active mode value based on gui state (already active or just clicked), defaults to the first
+---@return Mode active_mode, boolean did_click active mode value based on gui state (already active or just clicked), defaults to the first
 function update_radiobuttons(refs, modes, activate)
+	local did_click = false
 	if activate and activate.object_name=="LuaGuiElement" then
 		activate = modes[activate.name] -- clicked radio button -> set mode or nil if clicked unrelated
+		did_click = activate ~= nil
 	end
 	if activate then
 		for name, mode in pairs(modes) do
 			refs[name].state = mode == activate -- update all radio button states
 		end
-		return activate
+		return activate, did_click
 	else
 		-- find active mode from gui
 		for name, mode in pairs(modes) do
 			if refs[name].state then
-				return mode
+				return mode, did_click
 			end
 		end
 		
@@ -153,7 +155,7 @@ function update_radiobuttons(refs, modes, activate)
 		refs[name].state = true
 		
 		--return nil
-		return mode
+		return mode, did_click
 	end
 end
 

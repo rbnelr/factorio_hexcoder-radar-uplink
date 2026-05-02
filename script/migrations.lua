@@ -1,4 +1,5 @@
 local radars = require("script.radars")
+local Platforms = require("script.platforms")
 
 local migrations = {}
 
@@ -13,19 +14,33 @@ function migrations.migrate_less0_1_4()
 	---@class oldRadarData
 	---@field S oldRadarSettings
 	
+	---@class old_channel_id : integer
+	
 	---@class oldRadarSettings
 	---@field mode "comms"|"platforms"
 	---@field sel_orbit_only? boolean
-	---@field selected_channel? channel_id
+	---@field selected_channel? old_channel_id
 	---@field selected_platform? Platform|LuaSpacePlatform|platform_index
+	---@field selected? Channel|Platform
 	---@field dyn? CircRG|"circuit_red"|"circuit_green"|DynamicSelect
 	---@field dyn_text? string
 	---@field read_mode? "std"|"raw"
 	---@field read? ReadStd|ReadRaw
-
-	local channels = util.table.deepcopy(storage.channels or {}) -- deepcopy just to be safe
+	
+	---@class oldChannels
+	---@field next_id old_channel_id
+	---@field map table<old_channel_id, oldChannel>
+	
+	---@class oldChannel
+	---@field id old_channel_id
+	---@field name string
+	---@field is_interplanetary boolean
+	
+	-- back up old state
+	local old_channels = util.table.deepcopy(storage.channels or {}) --[[@as oldChannels|Channels]]
 	local old_radars = util.table.deepcopy(storage.radars or {}) --[[@as table<unit_number, oldRadarData>]]
 	
+	-- create new default state
 	migrations.reset()
 	
 	--storage.channels.next_id = channels.next_id or 1
@@ -35,9 +50,25 @@ function migrations.migrate_less0_1_4()
 	--	end
 	--end
 	
+	if old_channels.surfaces then
+		for sid,surf in pairs(old_channels.surfaces) do
+			local surface = game.surfaces[sid]
+			if surface then
+				for _,ch in pairs(surf.channels or {}) do
+					if ch.name then
+						storage.channels:init_channel(surface, ch.name, ch.is_interpl)
+					end
+				end
+			end
+		end
+	end
+	
+	-- transfer settings from old state to new looked up via radar unit_number
 	for id,data in pairs(storage.radars) do
+		local surface = data.entity.surface
 		local old_data = old_radars[id]
 		if old_data and old_data.S then
+			
 			local S = {}
 			S.mode = old_data.S.mode == "platforms" and "platforms" or "comms"
 			
@@ -64,20 +95,24 @@ function migrations.migrate_less0_1_4()
 					S.read[k] = old_data.S.read and old_data.S.read[k] or { false, false } -- copy setting or false to avoid affecting existing circuits
 				end
 				
-				S.selected_platform = nil
-				
-				local sel = old_data.S.selected_platform
-				if sel and sel.object_name == "table" then
-					S.selected_platform = sel
-				--elseif sel and sel.object_name == "LuaSpacePlatform" then -- only in dev: was never released
-				--	S.selected_platform = storage.platforms:init_platform(sel)
+				local sel = old_data.S.selected_platform or old_data.S.selected
+				if type(sel) == "table" then
+					S.selected = Platforms.platform_exists(sel.platform) and storage.platforms:init_platform(sel.platform) or nil
+				--elseif type(sel) == "userdata" and sel.object_name == "LuaSpacePlatform" then -- only in dev: was never released
+				--	S.selected = storage.platforms:init_platform(sel)
 				elseif type(sel) == "number" then
-					S.selected_platform = storage.platforms:init_platform(game.forces.player.platforms[sel])
+					S.selected = storage.platforms:init_platform(game.forces.player.platforms[sel])
 				end
 			else
-				S.selected_channel = 0
-				if storage.channels.map[old_data.S.selected_channel] then
-					S.selected_channel = old_data.S.selected_channel
+				local sel = old_data.S.selected_channel or old_data.S.selected
+				if type(sel) == "table" and type(sel.name) == "string" then
+					local is_interpl = type(sel.is_interpl) == "boolean" and sel.is_interpl or nil
+					S.selected = storage.channels:init_channel(surface, sel.name, is_interpl)
+				elseif type(sel) == "string" then
+					-- ?
+				elseif type(sel) == "number" then
+					--sel = old_channels.map[sel]
+					--S.selected = make_
 				end
 			end
 			

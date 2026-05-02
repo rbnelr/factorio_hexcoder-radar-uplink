@@ -1,13 +1,4 @@
 --[[
-TODO: switch channels over to being keyed on string again, this is safer to blueprint etc. (should switch platform as well!) (rename from gui should just update others or update on after asking)
- -> only show local channels and global ones exposed via interplanetary flag in gui
-  -> make channels get lazily created by name per surface (from gui), -> set up hubs and already connect according to rules (which surfaces can connect to? search all of them for channels of same name)
-  -> make gui figure out all "nearby channels", on_surface + planet<->platform + platform<->platform for direct space conn + any universal ones etc.
-   -> on gui select switch to channel by rewiring
-   -> update connections if rules change (like platform leaving orbit) -> cuts hubs connections but keeps channels selected
-   -> only delete channels manually, but only create hubs on surface where radar has created or selected channel (channels won't pollute other surfaces unless connected to once?)
-   -> sort drop down menu?
-
 TODO: add enough features for platform read mode to support fully automated mixed rocket launches together with silo mod
  -> need to be able to read requests without hard-selecting platforms
  -> read total requests? Not sure if actually useful
@@ -46,7 +37,6 @@ TODO:
 
 
 TODO: make space age optional?
-TODO: figure out correct dependency versions?
 
 TODO: undo/redo? seems hard
 TODO: blueprint over? hacky workaround but maybe not that hard? -> possible with lib, but from my understanding performance would be bad if every mod did it
@@ -56,7 +46,7 @@ TODO: copy paste? not really possible to do properly (with visual feedback?); bu
 ---@type ModStorage
 storage = storage
 
-DEBUG = false
+DEV = true
 
 local radars = require("script.radars")
 local Platforms = require("script.platforms")
@@ -87,7 +77,7 @@ script.on_nth_tick(12, function(event)
 end)
 
 script.on_event(defines.events.on_tick, function(event)
-	if DEBUG or storage._was_DEBUG then
+	if DEV or storage._was_DEBUG then
 		if not _did_reset then
 			migrations.migrate_less0_1_4()
 			_did_reset = true
@@ -179,13 +169,13 @@ deathrattles[defines.target_type.entity] = function(event)
 	radars.delete_radar(event.useful_id)
 end
 deathrattles[defines.target_type.space_platform] = function(event)
-	storage.platforms:delete_platform(event.useful_id)
+	storage.platforms:deleted_platform(event.useful_id)
 end
 deathrattles[defines.target_type.planet] = function(event)
 	storage.platforms:update_all_platforms_list()
 end
 deathrattles[defines.target_type.surface] = function(event)
-	storage.channels:delete_surface(event.useful_id)
+	storage.channels:deleted_surface(event.useful_id)
 end
 deathrattles[defines.target_type.player] = function(event)
 	radar_gui.force_close_gui(event.useful_id)
@@ -206,7 +196,7 @@ script.on_event(defines.events.on_runtime_mod_setting_changed, function(event)
 		ALLOW_INTERPL = settings.global["hexcoder_radar_uplink-allow_interplanetary_comms"].value
 		
 		radars.refresh_all_radars()
-		storage.channels:update_all_channels_is_interplanetary()
+		storage.channels:refresh_all_surface_links()
 	else
 		POLL_PERIOD = settings.global["hexcoder_radar_uplink-radar_poll_period"].value
 	end
@@ -216,7 +206,6 @@ end)
 ---@class unit_number : integer
 ---@class platform_index : integer
 ---@class surface_index : integer
----@class channel_id : number
 
 ---@class ModStorage
 ---@field radars table<unit_number, Radar>
@@ -239,7 +228,7 @@ function migrations.init()
 	storage.channels = Channels.new()
 	storage.poll_power_check = myutil.TickList.new()
 	storage.poll_dyn_select = myutil.TickList.new()
-	storage._was_DEBUG = DEBUG or nil
+	storage._was_DEBUG = DEV or nil
 	
 	storage.platforms:update_all_platforms_list()
 	

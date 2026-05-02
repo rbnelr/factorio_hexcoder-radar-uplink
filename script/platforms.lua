@@ -156,7 +156,7 @@ function Platforms:init_platform(platform)
 	return data
 end
 ---@param id platform_index
-function Platforms:delete_platform(id)
+function Platforms:deleted_platform(id)
 	local data = self[id]
 	if data then
 		data.stat_cc.destroy()

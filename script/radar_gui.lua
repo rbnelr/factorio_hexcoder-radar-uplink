@@ -1,10 +1,11 @@
 ---@class OpenGui
 ---@field refs GuiRefs
 ---@field data Radar Holds reference to data in storage for opened radar, or independent data if opening gui on ghost entity (created from tags)
----@field sel_items Platform[]|nil
+---@field sel_items (Channel|Platform?)[]
+---@field surface LuaSurface
+---@field unconfirmed_ch_name? string
 
 local radars = require("script.radars")
-local channels = require("script.channels")
 require("script.myutil")
 
 local radar_gui = {}
@@ -27,8 +28,73 @@ local function filter_for_gui(name, pattern)
 	end
 end
 
--- build platform list depending on mode and settings for gui, including what is currently selected
--- does not update radar! (data -> gui)
+---@param gui OpenGui
+---@param data Radar
+local function gui_update_channel_list(gui, data)
+	local PREFIX = "[img=hexcoder_radar_uplink-empty_sprite]   "
+	
+	--local gui_names = { "        [color=#a0a0a0][None][/color]" }
+	local gui_names = { PREFIX.."[color=#a0a0a0][None][/color]" }
+	local gui_items = { nil }
+	local idx = 2 -- next insert index
+	local sel_idx = nil
+	local sel = data.S.selected ---@cast sel Channel?
+	local channels = storage.channels
+	
+	local x = 0
+	for _, channel in pairs(channels:get_list_for_selection(data)) do
+		local display_name = filter_for_gui(channel.name, data.dyn_pattern)
+		if display_name then -- platforms in list should not be invalid, but check anyway
+			
+			local suffix = ""
+			--if not channel.is_temporary then suffix = " [color=#f00000][font=default-small][img=utility/track_button][/font][/color]" end
+			
+			local prefix = PREFIX
+			--local prefix = "        "
+			if channel.is_interpl then
+				prefix = "[img=hexcoder_radar_uplink-export_sprite]   [color=#FBFFDB]"
+				suffix = "[/color]"
+				
+				--prefix = "[img=utility/export_slot]  "
+				--prefix = "[color=#f00000][img=hexcoder_radar_uplink-export_sprite48][/color]  "
+				--if x % 2 == 0 then
+				--	--prefix = "[color=#ffa000][font=default-large-bold]^[/font][/color]  "
+				--	--prefix = "[img=utility/logistic_network_panel_white]    "
+				--	prefix = "[img=hexcoder_radar_uplink-export_sprite]   [color=#FBFFDB]"
+				--	suffix = "[/color]"
+				--else
+				--	--prefix = "[color=#00a000][font=default-large-bold]v[/font][/color]  "
+				--	--prefix = "[color=#f00000][img=hexcoder_radar_uplink-receive_sprite][/color]    "
+				--	prefix = "[img=hexcoder_radar_uplink-import_sprite]   [color=#5C828E]"
+				--	suffix = "[/color]"
+				--end
+				--x = x + 1
+			end
+			
+			gui_names[idx] = string.format("%s%s%s", prefix, display_name, suffix)
+			gui_items[idx] = channel
+			
+			if sel == channel then
+				sel_idx = idx
+			end
+			idx = idx + 1
+		end
+	end
+	
+	if sel_idx == nil then -- sel not in list, either nothing selected, platform deleted or not in orbit
+		if sel == nil then
+			sel_idx = 1 -- select [None] in ui
+		else
+			sel_idx = 1
+			-- TODO
+		end
+	end
+	
+	gui.refs.sel_list.items = gui_names
+	gui.refs.sel_list.selected_index = sel_idx
+	gui.sel_items = gui_items
+end
+
 ---@param gui OpenGui
 ---@param data Radar
 local function gui_update_platform_list(gui, data)
@@ -36,7 +102,7 @@ local function gui_update_platform_list(gui, data)
 	local gui_items = { nil }
 	local idx = 2 -- next insert index
 	local sel_idx = nil
-	local sel = data.S.selected_platform
+	local sel = data.S.selected ---@cast sel Platform?
 	
 	for _, plat in pairs(storage.platforms:get_list_for_selection(data)) do
 		local display_name = filter_for_gui(plat.name, data.dyn_pattern)
@@ -80,55 +146,16 @@ local function gui_update_platform_list(gui, data)
 	gui.sel_items = gui_items
 end
 
+-- build platform list depending on mode and settings for gui, including what is currently selected
+-- does not update radar! (data -> gui)
 ---@param gui OpenGui
 ---@param data Radar
-local function gui_update_channel_list(gui, data)
-	local gui_names = { "[color=#a0a0a0][font=default-small]ID    [/font][None][/color]" }
-	local gui_items = { nil }
-	local idx = 2 -- next insert index
-	local sel_idx = nil
-	local sel = data.S.selected_platform
-	
-	for _, plat, display_name in radars.get_platform_list_filtered_for_gui(data) do
-		local pl = plat.platform
-		if pl and pl.valid then -- platforms in list should not be invalid, but check anyway
-			plat.name = pl.name -- no rename event so do this here?
-			display_name = display_name or pl.name
-			
-			local suffix = ""
-			if pl.scheduled_for_deletion ~= 0 then suffix = " [color=#f00000](Scheduled for deletion)[/color]" end
-			
-			gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color]%s%s", pl.index, display_name, suffix)
-			gui_items[idx] = plat
-			
-			if sel == plat then
-				sel_idx = idx
-			end
-			idx = idx + 1
-		end
+local function gui_update_list(gui, data)
+	if (data.S.mode or "comms") == "comms" then
+		gui_update_channel_list(gui, data)
+	else
+		gui_update_platform_list(gui, data)
 	end
-	
-	if sel_idx == nil then -- sel not in list, either nothing selected, platform deleted or not in orbit
-		if sel == nil then
-			sel_idx = 1 -- select [None] in ui
-		else
-			-- add fake entry at the end to show what was selected despite not listed, as the selection stays
-			sel_idx = idx
-			local pl = sel.platform
-			gui_items[idx] = sel
-			if pl.valid then
-				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small]%2d    [/font][/color] [color=#b0b0b0]%s (Not listed)[/color]", pl.index, pl.name)
-			else
-				-- Not in list because it must have been deleted, don't silently pretend nothing was selected!
-				-- index not safe to read if not valid? despite the fact that it is unique and likely still there?
-				gui_names[idx] = string.format("[color=#a0a0a0][font=default-small] ?    [/font][/color] [color=#b0b0b0]%s (Deleted platform)[/color]", pl.name)
-			end
-		end
-	end
-	
-	gui.refs.sel_list.items = gui_names
-	gui.refs.sel_list.selected_index = sel_idx
-	gui.sel_items = gui_items
 end
 
 -- handle ui element visbility and greyed-out state (gui -> gui)
@@ -151,6 +178,12 @@ local function gui_update_vis_en(gui)
 	refs.pl_config.visible = mode == "platforms"
 	
 	if mode == "comms" then
+		local ch = gui.sel_items[refs.sel_list.selected_index] ---@cast ch Channel?
+		local can_edit = storage.channels:can_edit(ch)
+		refs.ch_delete.enabled = can_edit
+		refs.ch_interpl.enabled = can_edit and ALLOW_INTERPL
+		refs.ch_name.enabled = can_edit
+		refs.ch_rename.enabled = can_edit and ch and storage.channels:can_rename_channel(gui.surface, ch, refs.ch_name.text) or false
 	else
 		--local mode = update_radiobuttons(refs, UI_READ_MODES)
 		local read_mode = refs.pl_mode.switch_state == "left" and "std" or "raw"
@@ -169,7 +202,8 @@ local function radar2gui(gui, data)
 	local refs = gui.refs
 	local S = data.S
 	
-	update_radiobuttons(refs, UI_MODES, S.mode or "comms")
+	local mode = S.mode or "comms"
+	update_radiobuttons(refs, UI_MODES, mode)
 	
 	refs.dyn_enable.state = S.dyn ~= nil
 	local dyn = S.dyn or radars.defaults.dyn
@@ -181,6 +215,12 @@ local function radar2gui(gui, data)
 	refs.dyn_text.text = dyn.text
 	
 	-- comms mode
+	if mode == "comms" then
+		local ch = data.S.selected ---@cast ch Channel?
+		refs.ch_interpl.state = ch and ch.is_interpl == true or false
+		-- unconfirmed_ch_name keeps unconfirmed user edit through spurious radar2gui calls
+		refs.ch_name.text = gui.unconfirmed_ch_name or (ch and ch.name) or ""
+	end
 	
 	-- platforms mode
 	if S.sel_orbit_only ~= nil then
@@ -203,8 +243,7 @@ local function radar2gui(gui, data)
 		refs["pl_raw"..k.."G"].state = v.G
 	end
 	
-	--radar_gui_update_channels(gui, data)
-	gui_update_platform_list(gui, data)
+	gui_update_list(gui, data)
 	
 	gui_update_vis_en(gui)
 end
@@ -238,11 +277,11 @@ local function gui_state_changed(event)
 	-- full state of hidden panes is still kept in ui elements until gui is closed
 	-- minizing should probably be in refresh_radar, but it's convenient here and avoids some data/ui desyncs
 	local S = {}
-	S.selected_platform = data.S.selected_platform -- take previous selection instead of pulling from ui list just before we update it
+	S.selected = data.S.selected -- take previous selection instead of pulling from ui list just before we update it
 	
-	S.mode = update_radiobuttons(refs, UI_MODES, event.element)
+	local mode_changed
+	S.mode, mode_changed = update_radiobuttons(refs, UI_MODES, event.element)
 	
-	--S.dyn = refs.dyn_enable.state and { R=refs.dynR.state, G=refs.dynG.state } or nil
 	if event.element.name == "dynR" then refs.dynG.state = false end
 	if event.element.name == "dynG" then refs.dynR.state = false end
 	if not refs.dyn_enable.state then S.dyn = nil
@@ -256,31 +295,20 @@ local function gui_state_changed(event)
 		S.dyn.text = refs.dyn_text.text
 	end
 	
-	
 	data.S = S
 	
 	if S.mode == "comms" then
-		--S.selected_channel = gui.drop_down_channels[gui.refs.ch_drop_down.selected_index]
-		--
-		--local ch = storage.channels.map[S.selected_channel]
-		--if ch then
-		--	ch.is_interplanetary = refs.ch_interplanetary.state
-		--	radar_channels.update_is_interplanetary(ch.id)
-		--end
-		
-		--data.S.selected_channel = gui.drop_down_channels[event.element.selected_index]
-		--
-		--if data.S.selected_channel == -1 then
-		--	data.S.selected_channel = radar_channels.create_new_channel().id
-		--end
-		--
-		--radar_gui_update_channels(gui, data)
+		local ch = data.S.selected ---@cast ch Channel?
+		if ch then
+			if event.element.name == "ch_interpl" then
+				storage.channels:set_is_interpl(ch, refs.ch_interpl.state)
+			end
+		end
 	else
 		if S.dyn then
 			S.sel_orbit_only = refs.sel_orbit_only.switch_state == "right"
 		end
 		
-		--S.read_mode = update_radiobuttons(refs, UI_READ_MODES, event.element)
 		S.read_mode = refs.pl_mode.switch_state == "left" and "std" or "raw"
 		
 		local ui_prefix = "pl_"..S.read_mode
@@ -290,19 +318,24 @@ local function gui_state_changed(event)
 			            G=refs[ui_prefix..k.."G"].state }
 		end
 		S.read = read
+	end
+	
+	if mode_changed then
+		-- update selection for mode changes
+		data.S.selected = gui.sel_items[event.element.selected_index]
+		data.sel_idx = event.element.selected_index-1
+		data.sel_idx_from_gui = true
 		
+		gui.unconfirmed_ch_name = nil
 	end
 	
 	gui_update_vis_en(gui)
 	
 	radars.refresh_radar(data)
 	
-	if S.mode == "comms" then
-		
-	else
-		-- mode or sel_orbit_only could have changed
-		gui_update_platform_list(gui, data) -- do after data is final
-	end
+	-- mode or sel_orbit_only could have changed
+	-- update list now that data is final
+	gui_update_list(gui, data)
 end
 script.on_event({
 	defines.events.on_gui_checked_state_changed,
@@ -316,17 +349,17 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 	local data = gui.data
 	assert(data.entity and data.entity.valid)
 	
-	if data.S.mode == "comms" then
-		
-	else
-		data.S.selected_platform = gui.sel_items[event.element.selected_index]
-		-- this can be a bit glitchy, maybe because the output wire takes 2 ticks to change and poll_dyn_select switches us back?
-		-- so override first poll_dyn_select after gui selects
-		data.sel_idx = event.element.selected_index-1
-		data.sel_idx_from_gui = true
-		
-		gui_update_platform_list(gui, data) -- update list so that fake entries disappear
-	end
+	data.S.selected = gui.sel_items[event.element.selected_index]
+	-- this can be a bit glitchy, maybe because the output wire takes 2 ticks to change and poll_dyn_select switches us back?
+	-- so override first poll_dyn_select after gui selects
+	data.sel_idx = event.element.selected_index-1
+	data.sel_idx_from_gui = true
+	
+	-- full gui update
+	--> gui_update_list so that fake entries disappear when switching away from them
+	--> update ch_name from selection
+	gui.unconfirmed_ch_name = nil
+	radar2gui(gui, data)
 	
 	radars.refresh_radar(data, true)
 end)
@@ -342,37 +375,68 @@ script.on_event(defines.events.on_gui_text_changed, function(event)
 		local dyn_text = data.S.dyn and event.element.text
 		radars.set_dyn_filter(data, dyn_text)
 		
-		if data.S.mode == "comms" then
-			
-		else
-			gui_update_platform_list(gui, data) -- do last, so settings are fully rebuilt
-		end
+		gui_update_list(gui, data) -- do last, so settings are fully rebuilt
+	elseif event.element.name == "ch_name" then
+		gui.unconfirmed_ch_name = event.element.text
+		
+		radar2gui(gui, data) -- update list and do not update confirm button
 	end
 	
 	radars.refresh_radar(data, true)
+end)
+script.on_event(defines.events.on_gui_confirmed, function(event)
+	local gui = storage.open_guis[event.player_index]
+	if not gui then return end
+	--game.print("on_gui_click: ".. serpent.block(event))
+	local data = gui.data
+	assert(data.entity and data.entity.valid)
+	
+	if event.element.name == "ch_name" then
+		local text = event.element.text
+		if data.S.selected and storage.channels:can_rename_channel(gui.surface, data.S.selected --[[@as Channel]], text) then
+			storage.channels:rename_channel(gui.surface, data.S.selected --[[@as Channel]], text)
+			gui.unconfirmed_ch_name = nil
+			
+			radar2gui(gui, data)
+		end
+	end
+	
+	radars.refresh_radar(data)
 end)
 
 script.on_event(defines.events.on_gui_click, function(event)
 	local gui = storage.open_guis[event.player_index]
 	if not gui then return end
 	--game.print("on_gui_click: ".. serpent.block(event))
-	local refs = gui.refs
 	local data = gui.data
 	assert(data.entity and data.entity.valid)
 	
 	if event.element.name == "default_frame_close_button" then
 		radar_gui.force_close_gui(event.player_index)
-	elseif event.element.name == "ch_delete" then
-		--local data = gui.data
-		--
-		--local ch = storage.channels.map[data.S.selected_channel]
-		--if ch then
-		--	radar_channels.destroy_channel(data.S.selected_channel)
-		--end
+	elseif event.element.name == "ch_new" then
+		data.S.selected = storage.channels:init_channel(gui.surface)
 		
-		--radar_gui_update_channels(gui, data)
+		radar2gui(gui, data)
+	elseif event.element.name == "ch_rename" then
+		if data.S.selected then
+			assert(gui.unconfirmed_ch_name ~= nil)
+			storage.channels:rename_channel(gui.surface, data.S.selected --[[@as Channel]], gui.unconfirmed_ch_name)
+			gui.unconfirmed_ch_name = nil
+			
+			radar2gui(gui, data)
+		end
+	elseif event.element.name == "ch_delete" then
+		if data.S.selected then
+			storage.channels:delete_channel(gui.surface, data.S.selected --[[@as Channel]])
+			data.S.selected = nil
+			
+			radar2gui(gui, data)
+		end
 	end
+	
+	radars.refresh_radar(data)
 end)
+
 
 ---@return GuiDef
 local function get_window_def()
@@ -395,10 +459,10 @@ local function get_window_def()
 	local dyn_id_lbl = "[virtual-signal=signal-P][font=default-small] via ID[/font]"
 	local dyn_pulse_lbl = "[virtual-signal=signal-rightwards-leftwards-arrow][font=default-small] switch pulse[/font]"
 	
-	local dyn_idx_tt = "A positive [virtual-signal=signal-number-sign] signal will select from the list by index\nIndices start at 1\nIndices out of range (including 0) will select [None]\nThe filtered list is taken into account"
-	local dyn_id_tt = "A positive [virtual-signal=signal-P] signal will select platforms directly by ID\nCan select unlisted platforms\nInvalid IDs will select [None]\nThe selected index is output alongside the status read option for platforms (TODO: for channels)\nIf selected index is on the same wire as Dynamic Select, you can connect a combinator outputting an additional [virtual-signal=signal-number-sign]=1 to automatically iterate the list"
-	local dyn_pulse_tt = "Optional Pulse output on the tick the selected signals change"
-	local dyn_text_tt="Filter the list to entires containing this text\n'{}' acts a wildcard\nLetter codes like '{X}' will be replaced by the corresponding signal [virtual-signal=signal-X]\nIf the list is filtered down to only a single entry it will be selected and ignore [virtual-signal=signal-number-sign]\nYou can use this to select entries with your custom numbering scheme"
+	local dyn_idx_tt = "A positive [virtual-signal=signal-number-sign] signal will select from the filtered list by index\nIndices start at 1\nIndices out of range will select [None] at [virtual-signal=signal-number-sign]=0\nFor platforms the selected index is output alongside the status read option\nFor channels it is output on the selection wire\nIf output on the selection wire, the selection is automatically held and a combinator outputting an additional [virtual-signal=signal-number-sign]=1 can be connected to iterate the list"
+	local dyn_id_tt = "A positive [virtual-signal=signal-P] signal will select platforms directly by ID\nCan select unlisted platforms\nInvalid IDs will select [None]"
+	local dyn_pulse_tt = "Optional selection change pulse"
+	local dyn_text_tt="Filter the list by contained text\n'{}' acts a wildcard\nLetter codes like '{X}' will be replaced by the corresponding signal [virtual-signal=signal-X]\nIf the list is filtered down to a single item, [virtual-signal=signal-number-sign]=0 can be omitted\nYou can use this to select platforms or channels with a custom numbering scheme"
 	
 	local all_platforms_tt = "List all platforms in ID order\nwhich is the order they were built in"
 	local orbiting_tt = "List only platforms in orbit of planet\nRadars on platforms can also read platforms in their current orbit\nListed in order of arrival at planet"
@@ -463,29 +527,28 @@ local function get_window_def()
 		}
 	}
 	
-	local ch_new_tt = "New channel"
-	local ch_pinned_tt = "TODO:"
+	local ch_new_tt = "Create new channel for this surface"
 	local ch_interpl_tt = "Does this channel connect to other surfaces?\n(TODO: explain restrictions and relays)"
-	local ch_delete_tt = "Delete channel (universally for all radars)"
-	local ch_name_tt = "Rename channel (connected radars stay connected)"
+	local ch_delete_tt = "Delete this channel\nConnected radars will be disconnected\nDoes not affect channels on others surfaces"
+	local ch_name_tt = "Channel name\nName must be unique across surface\nRenaming will keep other radars connected"
 	
-	local comms_config = gui_vflow{name="comms_config"}:add{
+	local comms_config = gui_vflow{name="comms_config", style={vertical_spacing=20}}:add{
 		gui_hflow{}:add{
 			GUI{type="sprite-button", name="ch_new", style={size={28, 28}, padding={0,0,0,0}},
 				sprite="utility/add_white", tooltip=ch_new_tt },
-			GUI{type="sprite-button", name="ch_pinned", auto_toggle=true, style={size={28, 28}, padding={0,0,0,0}},
-				sprite="utility/track_button_white", tooltip=ch_pinned_tt },
-			--GUI{type="sprite-button", name="ch_interplanetary", auto_toggle=true, style={size={28, 28}, padding={0,0,0,0}},
+			--GUI{type="sprite-button", name="ch_interpl", auto_toggle=true, style={size={28, 28}, padding={0,0,0,0}},
 			--	sprite="utility/pin_arrow", tooltip="Delete channel (universally for all radars)" },
 			GUI{type="empty-widget", style={horizontally_stretchable=true}},
 			GUI{type="sprite-button", name="ch_delete", style={base="red_button", size={28, 28}, padding={0,0,0,0}},
 				sprite="utility/trash", tooltip=ch_delete_tt },
 		},
-		GUI{type="checkbox", name="ch_interpl", caption="Connect to other surfaces", state=false, tooltip=ch_interpl_tt},
 		gui_hflow{}:add{
-			GUI{type="label", caption="Channel Name", style={margin={4,6,0,0}}},
+			GUI{type="label", caption="Name", style={margin={4,6,0,0}}, tooltip=ch_name_tt },
 			GUI{type="textfield", name="ch_name", text="", style="stretchable_textfield", tooltip=ch_name_tt },
+			GUI{type="sprite-button", name="ch_rename", style={base="green_button", size={28, 28}, padding={0,0,0,0}},
+				sprite="utility/enter", tooltip=ch_name_tt },
 		},
+		GUI{type="checkbox", name="ch_interpl", caption="Cross-surface [img=hexcoder_radar_uplink-export_sprite]", state=false, tooltip=ch_interpl_tt},
 	}
 	
 	local pl_config = gui_vflow{name="pl_config"}:add{
@@ -545,7 +608,7 @@ local function create_radar_gui(player_index, player, entity)
 	window.force_auto_center()
 	
 	local data = radars.init_radar(entity)
-	local gui = { refs=refs, data=data }
+	local gui = { refs=refs, data=data, surface=entity.surface }
 	storage.open_guis[player_index] = gui
 	storage.open_guis2[data] = gui
 	

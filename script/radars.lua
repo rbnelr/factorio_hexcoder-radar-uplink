@@ -44,15 +44,14 @@
 ---@class (exact) RadarSettings
 ---@field mode "comms"|"platforms" Operation mode, comms for vanilla global channel or named channels, platforms for platform reading
 ---@field sel_orbit_only? boolean Fiter platform list to just platforms in orbit? (Also affects selection by index)
----@field selected_channel? channel_id
----@field selected_platform? Platform Selected platform
+---@field selected? Channel|Platform -- polymorphic selection to simplify dynamic selection (bad idea?)
 ---@field dyn? DynamicSelect
 ---@field dyn_text? string
 ---@field read_mode? "std"|"raw"
 ---@field read? ReadStd|ReadRaw
 
 -- Hidden wire for hidden circuits, can visualize using wire_origin.player in debug mode
-local HIDDEN = DEBUG and defines.wire_origin.player or defines.wire_origin.script
+local HIDDEN = DEV and defines.wire_origin.player or defines.wire_origin.script
 
 local STATUS_WORKING = defines.entity_status.working
 local W = defines.wire_connector_id
@@ -159,7 +158,6 @@ local CHECK_DC_IN_SPACE_PARAMS = {conditions={
 }}
 
 local util = require("util")
-local channels = require("script.channels")
 
 local radars = {}
 
@@ -267,13 +265,13 @@ function radars.settings_to_tags(ghost, entity_id)
 	return false
 end
 
----@param data Radar
-local function clear_hidden_circ(data)
-	if data.hidden_circ then
-		for _,v in pairs(data.hidden_circ) do
+---@param table table<string, LuaEntity>?
+---@return nil
+local function destroy_all(table)
+	if table then
+		for _,v in pairs(table) do
 			v.destroy()
 		end
-		data.hidden_circ = nil
 	end
 end
 
@@ -281,7 +279,7 @@ end
 function radars.delete_radar(id)
 	local data = storage.radars[id]
 	if data then
-		clear_hidden_circ(data)
+		data.hidden_circ = destroy_all(data.hidden_circ)
 		
 		storage.radars[id] = nil
 		
@@ -297,30 +295,13 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	local radar_surf = entity.surface
 	local S = data.S
 	local read_mode = S.read_mode
-	local circ = data.hidden_circ
 	
 	-- reconfigure circuits
-	if not circ or reconfig then
+	if reconfig then
 		local base_x = entity.position.x - 1.5
 		local base_y = entity.position.y - 2.5
 		
-		if S.dyn ~= nil then
-			storage.poll_dyn_select:try_add(data)
-			
-			--local dynCC = radar_surf.create_entity{
-			--	name="hexcoder_radar_uplink-sel_module", force=entity.force,
-			--	position={base_x-1.25, base_y-0.15}, snap_to_grid=false,
-			--	direction=defines.direction.west
-			--} ---@cast dynCC -nil
-			--
-			--dynCC.destructible = false
-			--dynCC.combinator_description = "dynCC"
-			--data.dynCC = dynCC
-		else
-			storage.poll_dyn_select:try_remove(data)
-		end
-		
-		circ = data.hidden_circ
+		local circ = data.hidden_circ
 		if not circ then
 			circ = {}
 			data.hidden_circ = circ
@@ -454,16 +435,16 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 	local _circR = W_circR
 	
 	local dcCheckR    = data.dcCheckR ---@cast dcCheckR -nil
-	local delayStatR     = data.delayStatR  ---@cast delayStatR -nil
-	local delayReqR      = data.delayReqR   ---@cast delayReqR -nil
-	local delayReqG      = data.delayReqG   ---@cast delayReqG -nil
-	local delayOtwR      = nil
-	local delayInvR      = nil
+	local delayStatR  = data.delayStatR  ---@cast delayStatR -nil
+	local delayReqR   = data.delayReqR   ---@cast delayReqR -nil
+	local delayReqG   = data.delayReqG   ---@cast delayReqG -nil
+	local delayOtwR   = nil
+	local delayInvR   = nil
 	
 	dcCheckR.disconnect_all(HIDDEN)
-	delayStatR .disconnect_all(HIDDEN)
-	delayReqR  .disconnect_all(HIDDEN)
-	delayReqG  .disconnect_all(HIDDEN)
+	delayStatR.disconnect_all(HIDDEN)
+	delayReqR.disconnect_all(HIDDEN)
+	delayReqG.disconnect_all(HIDDEN)
 	if read_mode ~= "std" then
 		delayOtwR = data.delayOtwR  ---@cast delayOtwR -nil
 		delayInvR = data.delayInvR  ---@cast delayInvR -nil
@@ -480,7 +461,7 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		pulse.enabled = not pulse.enabled
 	end
 	
-	local plat = S.selected_platform
+	local plat = S.selected ---@cast plat Platform?
 	
 	-- set sel_idx on CC
 	-- 0 if platform not found to enable easy iteration
@@ -528,34 +509,54 @@ function radars.refresh_radar(data, sel_changed_only)
 	local entity = data.entity
 	if not entity.valid then return end
 	local id = data.id
+	local S = data.S
 	--game.print("refresh_radar: ".. serpent.block(data))
 	
 	-- write tags to ghosts on change (ui seems to get a copy, possibly because entity.tags is behind API which copies)
 	if entity.type == "entity-ghost" then
-		radars.set_tags(entity, data.S)
+		radars.set_tags(entity, S)
 		return -- data is not in storage for ghost entities
 	end
 	
-	if not sel_changed_only then
-		local dyn = data.S.dyn
+	data.status = entity.status
+	
+	local channels = storage.channels
+	
+	local reconfig = not sel_changed_only
+	if reconfig then
+		local dyn = S.dyn
 		radars.set_dyn_filter(data, dyn and dyn.text)
+		
+		if dyn ~= nil then
+			storage.poll_dyn_select:try_add(data)
+		else
+			storage.poll_dyn_select:try_remove(data)
+		end
+		
+		-- fixup invalid polymorphic selection after switch
+		if S.selected then
+			if S.mode == "comms" then
+				if S.selected.hub == nil then S.selected = channels:get_global(entity.surface) end
+			elseif S.mode == "platforms" then
+				if S.selected.platform == nil then S.selected = nil end
+			end
+		end
 	end
 	
-	if data.S.mode == "comms" then
-		clear_hidden_circ(data)
-		storage.poll_dyn_select:try_remove(data)
-	elseif data.S.mode == "platforms" then
-		refresh_radar_platform_mode(entity, data, not sel_changed_only)
+	if S.mode == "comms" then
+		data.hidden_circ = destroy_all(data.hidden_circ)
+	elseif S.mode == "platforms" then
+		refresh_radar_platform_mode(entity, data, reconfig)
 	end
 	
-	--channels.update_radar_channel(data)
+	channels:refresh_channel_connection(data)
 	
 	storage.radars[id] = data
 	
-	if DEBUG then game.print("after refresh_radar: ".. serpent.line({
+	if DEV then game.print("after refresh_radar: ".. serpent.line({
 			--data.S,
 			game.tick,
-			data.sel_idx, data.S.selected_platform and data.S.selected_platform.name
+			data.sel_idx, data.S.selected and data.S.selected.name
 		}), {
 		sound = (sel_changed_only and defines.print_sound.never or defines.print_sound.use_player_settings)
 	}) end
@@ -579,9 +580,9 @@ function radars.init_radar(entity, copy_settings)
 			else
 				-- default settings if radar not registered in storage
 				-- Vanilla-equivalent global comms mode
-				S = { -- settings
+				S = { ---@type RadarSettings
 					mode = "comms",
-					selected_channel = 1, -- "[Global]"
+					selected = storage.channels:get_global(entity.surface),
 				}
 			end
 		end ---@cast S RadarSettings
@@ -602,6 +603,14 @@ function radars.init_radar(entity, copy_settings)
 	
 	radars.refresh_radar(data)
 	return data
+end
+
+-- gobal due to annoying circular dep
+---@param entity LuaEntity
+function radar_deselect_channel(entity)
+	local data = storage.radars[entity.unit_number]
+	assert(data and data.S.mode == "comms");
+	data.S.selected = nil
 end
 
 ---@param data Radar
@@ -653,13 +662,23 @@ function radars.set_dyn_filter(data, text)
 	game.print(serpent.block({ pat, fmt, fmt and fmt:format(5) }))
 end
 
+---@param data Radar
+---@return Platform[]|Channel[]
+local function get_list_for_selection(data)
+	if data.S.mode == "comms" then
+		return storage.channels:get_list_for_selection(data)
+	else
+		return storage.platforms:get_list_for_selection(data)
+	end
+end
+
 ---@param list Platform[]|Channel[]
 ---@param data Radar
 ---@param entity LuaEntity
 ---@param wire defines.wire_connector_id
 ---@param idx integer
 ---@return Platform?, integer?
-local function select_from_filtered_platform_list(list, data, entity, wire, idx)
+local function select_from_filtered_list(list, data, entity, wire, idx)
 	local pattern = data.dyn_pattern
 	local param_sig = data.dyn_pattern_signal
 	local param
@@ -694,8 +713,8 @@ end
 
 ---@param data Radar
 ---@param entity LuaEntity
----@return Platform?, integer? idx, integer? param
-local function dyn_select_platform(data, entity)
+---@return Channel|Platform?, integer? idx, integer? param
+local function dyn_select(data, entity)
 	local dyn = data.S.dyn
 	assert(dyn ~= nil)
 	local wire = defines.wire_connector_id[dyn.wire]
@@ -705,14 +724,14 @@ local function dyn_select_platform(data, entity)
 	local idx = dyn.idx_sel and entity.get_signal(SIG_LIST_IDX, wire) or 0
 	
 	if data.dyn_pattern then
-		local list = storage.platforms:get_list_for_selection(data)
-		local result, param = select_from_filtered_platform_list(list, data, entity, wire, idx)
+		local list = get_list_for_selection(data)
+		local result, param = select_from_filtered_list(list, data, entity, wire, idx)
 		-- similar to selection by index of of range should not fall back to ID
 		-- we should not fall back here even if we had no idx,
 		-- as user could be trying to select via dyn_pattern_signal=0
 		return result, idx, param -- return idx or count or both?
 	elseif idx > 0 then
-		local list = storage.platforms:get_list_for_selection(data)
+		local list = get_list_for_selection(data)
 		return list[idx], idx
 	end
 	
@@ -729,14 +748,14 @@ end
 ---@param data Radar
 function radars.poll_dyn_select(data)
 	local entity = data.entity
-	if not entity.valid then return end
+	if not entity.valid or data.status ~= STATUS_WORKING then return end
 	
-	local new_sel, idx, param = dyn_select_platform(data, entity)
+	local new_sel, idx, param = dyn_select(data, entity)
 	
 	-- selected new platform, or selected via different index
 	-- same index can have platform change because orbital filter
 	-- same platform might still require selected index output to be updated
-	if new_sel == data.S.selected_platform and
+	if new_sel == data.S.selected and
 	   idx == data.sel_idx and
 	   param == data.dyn_param then
 		return
@@ -749,9 +768,9 @@ function radars.poll_dyn_select(data)
 	end
 	
 	-- we want to only trigger switch pulse if output actually changes
-	assert(data.S.selected_platform ~= new_sel or data.sel_idx ~= idx or param ~= data.dyn_param)
-	data.S.selected_platform = new_sel
-	data.sel_idx = idx -- keep indx even if platform not found for change detect
+	assert(data.S.selected ~= new_sel or data.sel_idx ~= idx or param ~= data.dyn_param)
+	data.S.selected = new_sel
+	data.sel_idx = idx -- keep idx even if platform not found for change detect
 	data.dyn_param = param
 	
 	--entity.surface.play_sound{ path="utility/entity_settings_pasted", position=entity.position, volume_multiplier=1.25, override_sound_type="game-effect" }
@@ -771,7 +790,6 @@ function radars.poll_radar(data)
 	
 		local new_status = entity.status ---@cast new_status -nil
 		if new_status ~= data.status then
-			data.status = new_status
 			radars.refresh_radar(data, true)
 		end
 	end
