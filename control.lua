@@ -95,7 +95,7 @@ local function on_created_entity(event)
 	local entity = event.entity or event.destination --[[@as LuaEntity]]
 	--game.print("on_created_entity: ".. serpent.block({ event, entity }))
 	
-	local copy_settings = radars.tags_to_settings(event.tags, entity.force --[[@as LuaForce]])
+	local copy_settings = radars.tags_to_settings(event.tags, entity)
 	                   or (event.source and storage.radars[event.source.unit_number].S)
 	radars.init_radar(entity, copy_settings)
 end
@@ -252,56 +252,3 @@ function migrations.reset()
 	storage = {}
 	migrations.init()
 end
-
----- debugging
---[[
-local function debug_vis_wires(surface, time_to_live, origin)
-	local function _vis(entities)
-		for _, w in ipairs({
-			{t=W.circuit_red  , col = { 1, .2, .2 }, offset={x=0, y=0}},
-			{t=W.circuit_green, col = { .2, 1, .2 }, offset={x=-.1, y=-.1}},
-		}) do
-			for _, e in ipairs(entities) do
-				local con = e.get_wire_connectors()
-				con = con[w.t] and con[w.t].connections or {}
-				--game.print(">> con: ".. serpent.block(con))
-				for _, c in ipairs(con) do
-					if c.origin == origin then
-						local from = { entity=e, offset=w.offset }
-						local to = { entity=c.target.owner, offset=w.offset }
-						if from.entity.surface ~= surface then from = { position=from.entity.position, offset=w.offset } end
-						if   to.entity.surface ~= surface then   to = { position=  to.entity.position, offset=w.offset } end
-						
-						rendering.draw_line{ from = from, to = to, color = w.col, width = 2, surface = surface, time_to_live = time_to_live }
-						rendering.draw_line{ from = from, to = to, color = w.col, width = 8, surface = surface, time_to_live = time_to_live, render_mode="chart" }
-					end
-				end
-			end
-		end
-	end
-	
-	_vis(surface.find_entities_filtered{ type="radar", name="radar" })
-	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-cc" })
-	_vis(surface.find_entities_filtered{ name="hexcoder_radar_uplink-dc" })
-end
-
-commands.add_command("hexcoder_radar_uplink-vis", nil, function(command)
-	-- debug: visualize connections
-	for _, p in pairs(game.players) do
-		debug_vis_wires(p.surface, 60*10, HIDDEN) --defines.wire_origin.radars)
-	end
-	
-	--game.print("storage.open_guis:")
-	--for k,v in pairs(storage.open_guis) do
-	--	game.print(k ..": ".. serpent.line(v))
-	--end
-	--game.print("storage.platforms:")
-	--for k,v in pairs(storage.platforms) do
-	--	game.print(k ..": ".. serpent.line(v))
-	--end
-	--game.print("storage.radars:")
-	--for k,v in pairs(storage.radars) do
-	--	game.print(k ..": ".. serpent.line(v))
-	--end
-end)
-]]

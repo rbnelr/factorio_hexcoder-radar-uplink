@@ -31,44 +31,26 @@ end
 ---@param gui OpenGui
 ---@param data Radar
 local function gui_update_channel_list(gui, data)
-	local PREFIX = "[img=hexcoder_radar_uplink-empty_sprite]   "
-	
-	--local gui_names = { "        [color=#a0a0a0][None][/color]" }
-	local gui_names = { PREFIX.."[color=#a0a0a0][None][/color]" }
-	local gui_items = { nil }
+	local PREFIX = "[img=hexcoder_radar_uplink-empty_sprite] "
+	local gui_names = { PREFIX.."[color=#a0a0a0][None][/color]" } ---@type string[]
+	local gui_items = { nil } ---@type Channel[]
 	local idx = 2 -- next insert index
 	local sel_idx = nil
 	local sel = data.S.selected ---@cast sel Channel?
 	local channels = storage.channels
 	
-	local x = 0
-	for _, channel in pairs(channels:get_list_for_selection(data)) do
+	for _, channel in pairs(channels:get_list_for_selection(data.entity.surface, true)) do
 		local display_name = filter_for_gui(channel.name, data.dyn_pattern)
 		if display_name then -- platforms in list should not be invalid, but check anyway
-			
-			local suffix = ""
-			--if not channel.is_temporary then suffix = " [color=#f00000][font=default-small][img=utility/track_button][/font][/color]" end
-			
 			local prefix = PREFIX
-			--local prefix = "        "
+			local suffix = ""
 			if channel.is_interpl then
-				prefix = "[img=hexcoder_radar_uplink-export_sprite]   [color=#FBFFDB]"
-				suffix = "[/color]"
-				
-				--prefix = "[img=utility/export_slot]  "
-				--prefix = "[color=#f00000][img=hexcoder_radar_uplink-export_sprite48][/color]  "
-				--if x % 2 == 0 then
-				--	--prefix = "[color=#ffa000][font=default-large-bold]^[/font][/color]  "
-				--	--prefix = "[img=utility/logistic_network_panel_white]    "
-				--	prefix = "[img=hexcoder_radar_uplink-export_sprite]   [color=#FBFFDB]"
-				--	suffix = "[/color]"
-				--else
-				--	--prefix = "[color=#00a000][font=default-large-bold]v[/font][/color]  "
-				--	--prefix = "[color=#f00000][img=hexcoder_radar_uplink-receive_sprite][/color]    "
-				--	prefix = "[img=hexcoder_radar_uplink-import_sprite]   [color=#5C828E]"
-				--	suffix = "[/color]"
-				--end
-				--x = x + 1
+				if channel.type and channel.type >= 1 then
+					prefix = "[img=hexcoder_radar_uplink-import_sprite] [color=#a0a0a0]"
+					suffix = "[/color]"
+				else
+					prefix = "[img=hexcoder_radar_uplink-export_sprite] "
+				end
 			end
 			
 			gui_names[idx] = string.format("%s%s%s", prefix, display_name, suffix)
@@ -259,7 +241,8 @@ end
 function refresh_gui(data)
 	local gui = storage.open_guis2[data]
 	if gui then
-		gui_update_platform_list(gui, data)
+		--gui_update_list(gui, data)
+		radar2gui(gui, data)
 	end
 end
 
@@ -322,9 +305,10 @@ local function gui_state_changed(event)
 	
 	if mode_changed then
 		-- update selection for mode changes
-		data.S.selected = gui.sel_items[event.element.selected_index]
-		data.sel_idx = event.element.selected_index-1
-		data.sel_idx_from_gui = true
+		-- TODO: how does this make sense? sel_items is not updated yet?
+		--data.S.selected = gui.sel_items[event.element.selected_index]
+		--data.sel_idx = event.element.selected_index-1
+		--data.sel_idx_from_gui = true
 		
 		gui.unconfirmed_ch_name = nil
 	end
@@ -356,7 +340,7 @@ script.on_event(defines.events.on_gui_selection_state_changed, function(event)
 	data.sel_idx_from_gui = true
 	
 	-- full gui update
-	--> gui_update_list so that fake entries disappear when switching away from them
+	--> gui_update_list so that fake entries disappear when switching away from them or fake channels when selected
 	--> update ch_name from selection
 	gui.unconfirmed_ch_name = nil
 	radar2gui(gui, data)
@@ -415,8 +399,8 @@ script.on_event(defines.events.on_gui_click, function(event)
 		radar_gui.force_close_gui(event.player_index)
 	elseif event.element.name == "ch_new" then
 		data.S.selected = storage.channels:init_channel(gui.surface)
-		
-		radar2gui(gui, data)
+		refresh_all_guis()
+		--radar2gui(gui, data)
 	elseif event.element.name == "ch_rename" then
 		if data.S.selected then
 			assert(gui.unconfirmed_ch_name ~= nil)
@@ -548,7 +532,7 @@ local function get_window_def()
 			GUI{type="sprite-button", name="ch_rename", style={base="green_button", size={28, 28}, padding={0,0,0,0}},
 				sprite="utility/enter", tooltip=ch_name_tt },
 		},
-		GUI{type="checkbox", name="ch_interpl", caption="Cross-surface [img=hexcoder_radar_uplink-export_sprite]", state=false, tooltip=ch_interpl_tt},
+		GUI{type="checkbox", name="ch_interpl", caption="[img=hexcoder_radar_uplink-export_sprite] Cross-surface", state=false, tooltip=ch_interpl_tt},
 	}
 	
 	local pl_config = gui_vflow{name="pl_config"}:add{

@@ -29,19 +29,22 @@ unsure how channels should work
 
 ---@class Channels
 ---@field surfaces table<surface_index, SurfaceChannels>
+---@field interpl_channels table<string, boolean>
 local Channels = {}
 Channels.__index = Channels
 
 ---@class Channel
 ---@field name string
----@field special? integer
+---@field type? integer -- -1: [Global]  nil: real channel  1: transient channel
 ---@field is_interpl boolean?
 ---@field hub LuaEntity
 ---@field link_hub LuaEntity
+--> get surface via hub.surface
 
 ---@class SurfaceChannels
 ---@field channels table<string, Channel>
 ---@field selection_list? Channel[]
+---@field selection_list_show_interpl? boolean
 ---@field dbg_counter? integer
 
 local W = defines.wire_connector_id
@@ -54,24 +57,25 @@ local GLOBAL_CH_NAME = "[Global]" -- TODO: rename [default] or [surface-wide] ?
 
 ---@return Channels
 function Channels.new()
-	return setmetatable({ surfaces={} }, Channels)
+	return setmetatable({ surfaces={}, interpl_channels={} }, Channels)
 end
 
 local function _comp(l, r)
-	local ordL = l.special
-	local ordR = r.special
+	local ordL = l.type
+	local ordR = r.type
 	if ordL == ordR then
 		return l.name < r.name
 	end
 	return (ordL or 0) < (ordR or 0)
 end
 
----@param data Radar
+---@param surface LuaSurface
+---@param show_interpl boolean
 ---@return Channel[]
-function Channels:get_list_for_selection(data)
-	local surf = self:init_surface(data.entity.surface)
+function Channels:get_list_for_selection(surface, show_interpl)
+	local surf = self:init_surface(surface)
 	local list = surf.selection_list
-	if list then
+	if list and surf.selection_list_show_interpl == show_interpl then
 		return list
 	end
 	
@@ -82,21 +86,44 @@ function Channels:get_list_for_selection(data)
 		i = i + 1
 	end
 	
+	if show_interpl then
+		-- show potential interplanetary channels to connect to
+		-- show if no local channel with that name or if local channel not is_interpl
+		for name,_ in pairs(self.interpl_channels) do
+			local ch = surf.channels[name]
+			if not (ch and ch.is_interpl) then
+				--list[i] = self:init_channel(surface, name, true, true)
+				list[i] = { -- TODO: HACK, fake channel
+					name = name,
+					type = 1,
+					is_interpl = true,
+				}
+				i = i + 1
+			end
+		end
+	end
+	
 	table.sort(list, _comp)
 	
 	surf.selection_list = list
+	surf.selection_list_show_interpl = show_interpl
 	return list
 end
 
----@param channel Channel
-function Channels:refresh_surface_links(channel)
-	--game.print("refresh_surface_links: ".. channel_name)
+---@param name string
+function Channels:refresh_surface_links(name)
+	-- skip global channel
+	if name == GLOBAL_CH_NAME then
+		return
+	end
 	
-	channel.is_interpl = channel.is_interpl and ALLOW_INTERPL or nil
-	local name = channel.name
+	-- TODO: should early out if called for channel that was not and still is not interplanetary?
 	
+	-- wire up same-named channels across surfaces, if surface does not contain channel name simply skip it
+	-- effectively builds a signal bus across dimensions that can be connected to via hub<->link_hub wire
 	local prevR = nil
 	local prevG = nil
+	local any_interpl = nil
 	for _, surf in pairs(self.surfaces) do
 		local channel = surf.channels[name]
 		if channel then
@@ -107,10 +134,11 @@ function Channels:refresh_surface_links(channel)
 			lR.disconnect_all(HIDDEN)
 			lG.disconnect_all(HIDDEN)
 			
-			if channel.is_interpl then
+			if channel.is_interpl and ALLOW_INTERPL then
 				local h = channel.hub.get_wire_connectors(false)
 				lR.connect_to(h[W_circR], false, HIDDEN)
 				lG.connect_to(h[W_circG], false, HIDDEN)
+				any_interpl = true
 			end
 			
 			if prevR then ---@cast prevG -nil
@@ -121,27 +149,27 @@ function Channels:refresh_surface_links(channel)
 			prevG = lG
 		end
 	end
-end
-function Channels:refresh_all_surface_links()
 	
-	local interpl_names = {}
-	for _, surf in pairs(self.surfaces) do
-		for name, channel in pairs(surf.channels) do
-			interpl_names[name] = interpl_names[name] or channel.is_interpl
+	if self.interpl_channels[name] ~= any_interpl then
+		self.interpl_channels[name] = any_interpl
+		-- invalidate all selection lists due to interpl_channels potentially showing in lists
+		for _, surf in pairs(self.surfaces) do
+			surf.selection_list = nil -- invalidate
 		end
 	end
-	
-	for name,_ in pairs(interpl_names) do
-		self:refresh_surface_links(name)
-	end
 end
-
----@param channel Channel
----@param is_interpl boolean
-function Channels:set_is_interpl(channel, is_interpl)
-	channel.is_interpl = is_interpl or nil
+function Channels:refresh_all_surface_links()
+	self.interpl_channels = {} -- invalidate all to be safe
 	
-	self:refresh_surface_links(channel)
+	local visited = {}
+	for _, surf in pairs(self.surfaces) do
+		for name,_ in pairs(surf.channels) do
+			if visited[name] == nil then
+				self:refresh_surface_links(name)
+				visited[name] = true
+			end
+		end
+	end
 end
 
 ---@param surface LuaSurface
@@ -166,17 +194,26 @@ function Channels:deleted_surface(sid)
 	self:refresh_all_surface_links()
 end
 
----@param channel Channel?
----@return boolean
-function Channels:can_edit(channel)
-	return channel and channel.name ~= GLOBAL_CH_NAME or false
-end
-
 ---@param surface LuaSurface
 ---@return Channel
 function Channels:get_global(surface)
 	local surf = self:init_surface(surface)
 	return surf.channels[GLOBAL_CH_NAME]
+end
+
+---@param channel Channel
+---@param is_interpl boolean?
+function Channels:set_is_interpl(channel, is_interpl)
+	if channel.is_interpl == is_interpl then
+		return
+	end
+	
+	channel.is_interpl = is_interpl or nil
+	
+	self:refresh_surface_links(channel.name)
+	
+	local surf = self:init_surface(channel.hub.surface)
+	surf.selection_list = nil -- invalidate
 end
 
 --[[
@@ -244,11 +281,39 @@ function Channels:refresh_channel_connection(radar)
 	end
 	
 	local new_channel = radar.S.selected
-	if new_channel and new_channel.hub and radar.status == STATUS_WORKING then
-		local cc = new_channel.hub.get_wire_connectors(false)
-		connR.connect_to(cc[W.circuit_red  ], false, HIDDEN)
-		connG.connect_to(cc[W.circuit_green], false, HIDDEN)
+	if new_channel then
+		local type = new_channel.type
+		if type and type >= 1 then
+			-- selected fake channel, make real
+			new_channel = self:init_channel(radar.entity.surface, new_channel.name, new_channel.is_interpl)
+			radar.S.selected = new_channel
+			refresh_all_guis()
+		end
+		
+		local hub = new_channel.hub
+		if hub and radar.status == STATUS_WORKING then
+			local cc = hub.get_wire_connectors(false)
+			local dyn = radar.S.dyn
+			if dyn then
+				local dyn_wire = dyn.wire
+				if dyn_wire ~= "circuit_red" then
+					connR.connect_to(cc[W_circR], false, HIDDEN)
+				end
+				if dyn_wire ~= "circuit_green" then
+					connG.connect_to(cc[W_circG], false, HIDDEN)
+				end
+			else
+				connR.connect_to(cc[W_circR], false, HIDDEN)
+				connG.connect_to(cc[W_circG], false, HIDDEN)
+			end
+		end
 	end
+end
+
+---@param channel Channel?
+---@return boolean
+function Channels:can_edit(channel)
+	return channel and channel.name ~= GLOBAL_CH_NAME or false
 end
 
 ---@param surface LuaSurface
@@ -258,7 +323,7 @@ end
 function Channels:can_rename_channel(surface, channel, new_name)
 	local surf = self:init_surface(surface)
 	return string.len(new_name) > 0
-		and channel.special == nil
+		and channel.type == nil
 		and surf.channels[new_name] == nil -- can't rename to existing name including of channel itself
 end
 
@@ -273,6 +338,9 @@ function Channels:rename_channel(surface, channel, new_name)
 		surf.channels[channel.name] = nil
 		surf.channels[new_name] = channel
 		surf.selection_list = nil -- invalidate
+		
+		self:refresh_surface_links(channel.name)
+		self:refresh_surface_links(new_name)
 		
 		channel.name = new_name
 		
@@ -301,6 +369,7 @@ local function generate_unique_name(surf, base_name)
 end
 
 -- return existing channel, laziliy create it with given name or with generated unique name
+-- only set is_interpl if new channel!
 ---@param surface LuaSurface
 ---@param name? string
 ---@param is_interpl? boolean
@@ -310,6 +379,7 @@ function Channels:init_channel(surface, name, is_interpl)
 	
 	local channel = surf.channels[name]
 	if channel then
+		-- return existing channel, do not change is_interpl
 		return channel
 	end
 	
@@ -358,24 +428,22 @@ function Channels:init_channel(surface, name, is_interpl)
 	local _ = hub.get_wire_connectors(true)
 	      _ = link_hub.get_wire_connectors(true)
 	
-	--update_channel_surface_links(id)
-	
-	local special
-	if name == GLOBAL_CH_NAME then special = -1 end -- [Global] sorts as first item
+	local type
+	if name == GLOBAL_CH_NAME then type = -1 end -- [Global] sorts as first item
 	
 	channel = { ---@type Channel
 		name=name,
 		is_interpl=is_interpl,
-		special=special,
+		type=type,
 		hub=hub,
 		link_hub=link_hub,
 	}
 	surf.channels[name] = channel
 	surf.selection_list = nil -- invalidate
 	
-	self:refresh_surface_links(channel)
+	self:refresh_surface_links(name)
 	
-	refresh_all_guis()
+	--refresh_all_guis() -- doesn't work well
 	
 	return channel
 end
@@ -396,13 +464,15 @@ function Channels:delete_channel(surface, channel)
 		end
 	end
 	for _, c in ipairs(connG.connections) do
-		if c.origin == HIDDEN and (c.target.owner.name == "radar") then
+		if c.origin == HIDDEN and (c.target.owner.type == "radar") then
 			radar_deselect_channel(c.target.owner)
 		end
 	end
 	
 	surf.channels[channel.name] = nil
 	surf.selection_list = nil -- invalidate
+	
+	self:refresh_surface_links(channel.name)
 	
 	channel.hub.destroy()
 	channel.link_hub.destroy()

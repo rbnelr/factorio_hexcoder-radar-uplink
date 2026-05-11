@@ -30,10 +30,16 @@ function migrations.migrate_less0_1_4()
 	---@class oldChannels
 	---@field next_id old_channel_id
 	---@field map table<old_channel_id, oldChannel>
+	---@field surfaces table<surface_index, oldSurfaceChannels>
+	
+	---@class oldSurfaceChannels
+	---@field channels table<string, oldChannel>
 	
 	---@class oldChannel
 	---@field id old_channel_id
 	---@field name string
+	---@field type? integer
+	---@field special? integer
 	---@field is_interplanetary boolean
 	
 	-- back up old state
@@ -55,7 +61,8 @@ function migrations.migrate_less0_1_4()
 			local surface = game.surfaces[sid]
 			if surface then
 				for _,ch in pairs(surf.channels or {}) do
-					if ch.name then
+					-- any non-global and non-transient channel
+					if ch.name and ch.type == nil and ch.special == nil and ch.name ~= "[Global]" then
 						storage.channels:init_channel(surface, ch.name, ch.is_interpl)
 					end
 				end
@@ -122,9 +129,9 @@ function migrations.migrate_less0_1_4()
 	end
 end
 
-commands.add_command("hexcoder_radar_uplink-migrate", nil, function(command)
-	migrations.migrate_less0_1_4()
-end)
+--commands.add_command("hexcoder_radar_uplink-migrate", nil, function(command)
+--	migrations.migrate_less0_1_4()
+--end)
 
 script.on_configuration_changed(function(data)
 	local changes = data.mod_changes["hexcoder-radar-uplink"]

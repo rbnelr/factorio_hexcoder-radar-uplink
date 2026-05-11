@@ -17,7 +17,11 @@
 -- Hidden combinators that connect to platform CCs, store red input wire directly for efficiency, entity is .owner
 ---@field hidden_circ? table<string, LuaEntity>
 ---@field ccPulseCtrl? LuaConstantCombinatorControlBehavior
----@field ccSelSec1?   LuaLogisticSection
+---@field ccSec1?      LuaLogisticSection
+---@field acPulseWDynSel? LuaWireConnector
+---@field radarWDynSel? LuaWireConnector
+---@field radarR?      LuaWireConnector
+---@field radarG?      LuaWireConnector
 ---@field dcCheckR?    LuaWireConnector
 ---@field delayStatR?  LuaWireConnector
 ---@field delayReqR?   LuaWireConnector
@@ -77,12 +81,17 @@ local SIG_ORBIT_ID     = {type="virtual", name="signal-O"} ---@type SignalID
 --local SIG_INTERNAL1F = { value={type="virtual", name=SIG_INTERNAL1.name, quality="normal"}, min=1 } ---@type LogisticFilter
 --local SIG_LIST_IDXF  = { value={type="virtual", name=SIG_LIST_IDX.name, quality="normal"}, min=0 } ---@type LogisticFilter
 
+local SIG_SWITCH_PULSE1F = { value=SIG_SWITCH_PULSE.name, min=1 } ---@type LogisticFilter
 local SIG_INTERNAL1F = { value=SIG_INTERNAL1.name, min=1 } ---@type LogisticFilter
 local SIG_LIST_IDXF  = { value=SIG_LIST_IDX.name, min=0 } ---@type LogisticFilter
 
 local ARITH_DELAY = { ---@type ArithmeticCombinatorParameters
 	first_signal=SIG_EACH, second_constant=0, operation="+",
 	output_signal=SIG_EACH
+}
+local ARITH_INVERT_PULSE = { ---@type ArithmeticCombinatorParameters
+	first_signal=SIG_SWITCH_PULSE, second_constant=-1, operation="*",
+	output_signal=SIG_SWITCH_PULSE
 }
 local ARITH_R_MINUS_G = { ---@type ArithmeticCombinatorParameters
 	first_signal=SIG_EACH, second_signal=SIG_EACH, operation="-",
@@ -114,7 +123,6 @@ local STAT_DC_PARAMS = {conditions={
 },outputs={
 	{signal=SIG_EVERYTHING, copy_count_from_input=true, networks=netR},
 	{signal=SIG_INFO, copy_count_from_input=true, networks=netG},
-	{signal=SIG_LIST_IDX, copy_count_from_input=true, networks=netG},
 	{signal=SIG_SWITCH_PULSE, copy_count_from_input=true, networks=netG},
 }}
 
@@ -215,35 +223,45 @@ function radars.set_tags(ghost, S)
 	-- make sure selection works across saves
 	local T = util.table.deepcopy(S) --[[@as table]]
 	if T.mode == "comms" then
-		T.selected = nil -- TODO
+		if S.selected then
+			assert(S.selected.type == nil or S.selected.type == -1)
+			T.selected_name = S.selected.name
+			T.selected_is_interpl = S.selected.is_interpl
+		end
+		T.selected = nil
 	else
 		-- remember name and id
-		T.selected_id = T.selected_platform and T.selected_platform.index or nil
-		T.selected_name = T.selected_platform and T.selected_platform.name
-		T.selected_platform = nil
+		T.selected_id = S.selected and S.selected.platform.index or nil
+		T.selected_name = S.selected and S.selected.name
+		T.selected = nil
 	end
 	local tags = ghost.tags or {}
 	tags["hexcoder_radar_uplink"] = T
 	ghost.tags = tags
 end
 ---@param tags table?
----@param as_force LuaForce
+---@param to_entity LuaEntity
 ---@return RadarSettings?
-function radars.tags_to_settings(tags, as_force)
+function radars.tags_to_settings(tags, to_entity)
 	local T = tags and tags["hexcoder_radar_uplink"]
 	if not T then return nil end
 	
 	local S = util.table.deepcopy(T)
 	if S.mode == "comms" then
-		-- TODO
+		if S.selected_name then
+			S.selected = storage.channels:init_channel(to_entity.surface, S.selected_name, S.selected_is_interpl)
+			refresh_all_guis()
+		end
+		S.selected_is_interpl = nil
+		S.selected_name = nil
 	else
 		-- get platform via id, check name and fallback to name-based search
 		if S.selected_id then
-			local platforms = as_force.platforms
-			S.selected_platform = platforms[S.selected_id]
-			if not (S.selected_platform and S.selected_platform.name == S.selected_name) then
+			local platforms = to_entity.force.platforms
+			S.selected = platforms[S.selected_id]
+			if not (S.selected and S.selected.name == S.selected_name) then
 				for _, pl in pairs(platforms) do
-					if pl.name == S.selected_name then S.selected_platform = pl break end
+					if pl.name == S.selected_name then S.selected = pl break end
 				end
 			end
 		end
@@ -265,13 +283,27 @@ function radars.settings_to_tags(ghost, entity_id)
 	return false
 end
 
----@param table table<string, LuaEntity>?
----@return nil
-local function destroy_all(table)
-	if table then
-		for _,v in pairs(table) do
+---@param data Radar
+local function destroy_hidden_circ(data)
+	if data.hidden_circ then
+		for _,v in pairs(data.hidden_circ) do
 			v.destroy()
 		end
+		
+		data.ccPulseCtrl = nil
+		data.ccSec1      = nil
+		data.acPulseWDynSel = nil
+		data.radarWDynSel = nil
+		data.radarR      = nil
+		data.radarG      = nil
+		data.dcCheckR    = nil
+		data.delayStatR  = nil
+		data.delayReqR   = nil
+		data.delayReqG   = nil
+		data.delayOtwR   = nil
+		data.delayInvR   = nil
+		
+		data.hidden_circ = nil
 	end
 end
 
@@ -279,7 +311,7 @@ end
 function radars.delete_radar(id)
 	local data = storage.radars[id]
 	if data then
-		data.hidden_circ = destroy_all(data.hidden_circ)
+		destroy_hidden_circ(data)
 		
 		storage.radars[id] = nil
 		
@@ -391,7 +423,8 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		            combinator("dc",2, 1, "dcOtw", DATA_DC_PARAMS, readRG.Otw, delayOtw and delayOtw[W_outR], chkG)
 		            combinator("dc",3, 1, "dcInv", DATA_DC_PARAMS, readRG.Inv, delayInv and delayInv[W_outR], chkG)
 		
-		-- Pulse from CC section toggle + CC section for outputting selected index
+		-- Pulse from CC toggle + CC for outputting selected index
+		-- TODO: switch to increment tech?
 		local cc =      combinator("cc", -1,-2.5, "ccPulse", nil, true) ---@cast cc -nil
 		local cc2 =     combinator("cc",  0,-2.5, "ccSel", nil, true) ---@cast cc2 -nil
 		local acPulse = combinator("ac", -1,  -1, "acPulse", ARITH_DELAY, true, cc[W_circR]) ---@cast acPulse -nil
@@ -407,7 +440,7 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		ctrl2.sections[1].filters = { SIG_LIST_IDXF }
 		
 		data.ccPulseCtrl = ctrl1
-		data.ccSelSec1 = ctrl2.sections[1]
+		data.ccSec1 = ctrl2.sections[1]
 		
 		data.dcCheckR = chk[W_inR]
 		data.delayStatR = delaySta[W_inR]
@@ -452,33 +485,43 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 		delayInvR.disconnect_all(HIDDEN)
 	end
 	
-	local dyn = S.dyn
-	local pulse = data.ccPulseCtrl ---@cast pulse -nil
-	local selCC = data.ccSelSec1 ---@cast selCC -nil
-	
-	-- trigger switch pulse
-	if dyn and dyn.switch_pulse then
-		pulse.enabled = not pulse.enabled
-	end
-	
 	local plat = S.selected ---@cast plat Platform?
+	local working = data.status == STATUS_WORKING -- powered and not frozen
 	
-	-- set sel_idx on CC
-	-- 0 if platform not found to enable easy iteration
-	local filters = selCC.filters
-	filters[1].min = plat and dyn and data.sel_idx or 0
-	if data.dyn_pattern_signal then
-		local filter = filters[2] or {}
-		filter.value = data.dyn_pattern_signal.name
-		filter.min = data.dyn_param or 0
-		filters[2] = filter
-	else
+	local dyn = S.dyn
+	if not working then
+		local selCC = data.ccSec1 ---@cast selCC -nil
+		local filters = selCC.filters
+		filters[1].min = 0
 		filters[2] = nil
+		selCC.filters = filters
+	elseif dyn then
+		local pulse = data.ccPulseCtrl ---@cast pulse -nil
+		local selCC = data.ccSec1 ---@cast selCC -nil
+		
+		-- trigger switch pulse
+		if dyn.switch_pulse then
+			pulse.enabled = not pulse.enabled
+		end
+		
+		-- set sel_idx on CC
+		-- 0 if platform not found to enable easy iteration
+		local filters = selCC.filters
+		filters[1].min = plat and data.sel_idx or 0
+		
+		if data.dyn_pattern_signal then
+			local filter = filters[2] or {}
+			filter.value = data.dyn_pattern_signal.name
+			filter.min = data.dyn_param or 0
+			filters[2] = filter
+		else
+			filters[2] = nil
+		end
+		
+		selCC.filters = filters
 	end
-	selCC.filters = filters
 	
 	---- connect if powered and platform selected
-	local working = data.status == STATUS_WORKING -- powered and not frozen
 	if working and plat then
 		
 		local plStat = plat.stat_cc.get_wire_connectors(true)[_circR]
@@ -498,6 +541,118 @@ local function refresh_radar_platform_mode(entity, data, reconfig)
 			delayOtwR.connect_to(plOtw[_circR], false, HIDDEN) ---@diagnostic disable-line
 			delayInvR.connect_to(plInv[_circR], false, HIDDEN) ---@diagnostic disable-line
 		end
+	end
+end
+
+---@param entity LuaEntity
+---@param data Radar
+---@param reconfig boolean
+local function refresh_radar_channel_mode(entity, data, reconfig)
+	local radar_surf = entity.surface
+	local S = data.S
+	local dyn = S.dyn
+	if dyn == nil then
+		destroy_hidden_circ(data)
+		return
+	end
+	
+	-- reconfigure circuits
+	if reconfig then
+		local base_x = entity.position.x - 1.5
+		local base_y = entity.position.y - 2.5
+		
+		local circ = data.hidden_circ
+		if not circ then
+			circ = {}
+			data.hidden_circ = circ
+		end
+		
+		---@param params ArithmeticCombinatorParameters?
+		---@return LuaWireConnector[]
+		local function combinator(ty, x,y, name, params)
+			local comb = circ[name]
+			if not comb then
+				comb = radar_surf.create_entity{ ---@diagnostic disable-line
+					name="hexcoder_radar_uplink-"..ty, force=entity.force,
+					position={base_x + x*0.75, base_y + y}, snap_to_grid=false,
+					direction=defines.direction.south
+				} ---@cast comb -nil
+				comb.destructible = false
+				comb.combinator_description = name
+				
+				circ[name] = comb
+			end
+			
+			if params then
+				local ctrl = comb.get_or_create_control_behavior() --[[@as LuaDeciderCombinatorControlBehavior|LuaArithmeticCombinatorControlBehavior]]
+				ctrl.parameters = params
+			end
+			
+			local conns = comb.get_wire_connectors(true)
+			for _,c in pairs(conns) do
+				c.disconnect_all(HIDDEN)
+			end
+			
+			return conns
+		end
+		
+		local cc =      combinator("cc", -1,-2.5, "ccPulse") ---@cast cc -nil
+		local acPulse = combinator("ac", -1,  -1, "acPulse", ARITH_INVERT_PULSE) ---@cast acPulse -nil
+		
+		local ctrl = circ.ccPulse.get_or_create_control_behavior() --[[@as LuaConstantCombinatorControlBehavior]]
+		local sec1 = ctrl.sections[1]
+		sec1.filters = { [1]=SIG_SWITCH_PULSE1F, [2]=SIG_LIST_IDXF }
+		data.ccSec1 = sec1
+		
+		local radarW = entity.get_wire_connectors(true)
+		
+		if dyn.wire == "circuit_red" then
+			cc[W_circR].connect_to(acPulse[W_outR], false, HIDDEN)
+			cc[W_circG].connect_to(acPulse[W_inG], false, HIDDEN)
+			
+			data.radarWDynSel = radarW[W_circR]
+			data.acPulseWDynSel = acPulse[W_outR]
+		else
+			cc[W_circG].connect_to(acPulse[W_outG], false, HIDDEN)
+			cc[W_circR].connect_to(acPulse[W_inR], false, HIDDEN)
+			
+			data.radarWDynSel = radarW[W_circG]
+			data.acPulseWDynSel = acPulse[W_outG]
+		end
+	end
+	
+	local working = data.status == STATUS_WORKING -- powered and not frozen
+	---- connect if powered, if no channel selected still connect to get switch pulse
+	if working then
+		local ch = S.selected ---@cast ch Channel?
+		
+		if dyn then
+			local ccSec1 = data.ccSec1 ---@cast ccSec1 -nil
+			local filters = ccSec1.filters
+			
+			-- trigger switch pulse
+			if dyn.switch_pulse then
+				local fil = filters[1]
+				fil.min = fil.min + 1
+			end
+			
+			filters[2].min = ch and data.sel_idx or 0
+			
+			if data.dyn_pattern_signal then
+				local fil = filters[3] or {}
+				fil.value = data.dyn_pattern_signal.name
+				fil.min = data.dyn_param or 0
+				filters[3] = fil
+			else
+				filters[3] = nil
+			end
+			
+			ccSec1.filters = filters
+		end
+		
+		data.acPulseWDynSel.connect_to(data.radarWDynSel, false, HIDDEN)
+	else
+		data.acPulseWDynSel.disconnect_from(data.radarWDynSel, HIDDEN)
 	end
 end
 
@@ -533,33 +688,45 @@ function radars.refresh_radar(data, sel_changed_only)
 			storage.poll_dyn_select:try_remove(data)
 		end
 		
-		-- fixup invalid polymorphic selection after switch
-		if S.selected then
-			if S.mode == "comms" then
-				if S.selected.hub == nil then S.selected = channels:get_global(entity.surface) end
-			elseif S.mode == "platforms" then
-				if S.selected.platform == nil then S.selected = nil end
+		local prev_mode = data.delayStatR ~= nil and "platforms" or "comms"
+		
+		if S.mode ~= prev_mode then
+			-- fixup invalid polymorphic selection after switch
+			if S.selected then
+				if S.mode == "comms" then
+					S.selected = channels:get_global(entity.surface)
+				elseif S.mode == "platforms" then
+					S.selected = nil
+				end
+			end
+			
+			destroy_hidden_circ(data)
+			
+			if S.mode == "platforms" then
+				channels:refresh_channel_connection(data)
 			end
 		end
 	end
 	
 	if S.mode == "comms" then
-		data.hidden_circ = destroy_all(data.hidden_circ)
+		refresh_radar_channel_mode(entity, data, reconfig)
+		
+		channels:refresh_channel_connection(data)
 	elseif S.mode == "platforms" then
 		refresh_radar_platform_mode(entity, data, reconfig)
 	end
 	
-	channels:refresh_channel_connection(data)
-	
 	storage.radars[id] = data
 	
-	if DEV then game.print("after refresh_radar: ".. serpent.line({
-			--data.S,
-			game.tick,
-			data.sel_idx, data.S.selected and data.S.selected.name
-		}), {
-		sound = (sel_changed_only and defines.print_sound.never or defines.print_sound.use_player_settings)
-	}) end
+	if DEV then
+		--game.print("after refresh_radar: ".. serpent.line({
+		--	--data.S,
+		--	game.tick,
+		--	data.sel_idx, data.S.selected and data.S.selected.name
+		--}), {
+		--	sound = (sel_changed_only and defines.print_sound.never or defines.print_sound.use_player_settings)
+		--})
+	end
 end
 ---@param entity LuaEntity
 ---@param copy_settings RadarSettings?
@@ -574,10 +741,9 @@ function radars.init_radar(entity, copy_settings)
 		if copy_settings then
 			S = util.table.deepcopy(copy_settings)
 		else
-			local tags = radars.tags_to_settings(entity.tags, entity.force --[[@as LuaForce]])
-			if tags then -- handle allowing gui from ghost entities
-				S = tags
-			else
+			-- handle allowing gui from ghost entities
+			S = radars.tags_to_settings(entity.tags, entity)
+			if not S then
 				-- default settings if radar not registered in storage
 				-- Vanilla-equivalent global comms mode
 				S = { ---@type RadarSettings
@@ -628,6 +794,8 @@ function radars.set_dyn_filter(data, text)
 		data.dyn_pattern_format = nil
 		data.dyn_pattern_signal = nil
 		data.dyn_param = nil
+		data.sel_idx = nil
+		data.sel_idx_from_gui = nil
 		return
 	end
 	
@@ -666,7 +834,7 @@ end
 ---@return Platform[]|Channel[]
 local function get_list_for_selection(data)
 	if data.S.mode == "comms" then
-		return storage.channels:get_list_for_selection(data)
+		return storage.channels:get_list_for_selection(data.entity.surface, false)
 	else
 		return storage.platforms:get_list_for_selection(data)
 	end
@@ -752,6 +920,10 @@ function radars.poll_dyn_select(data)
 	
 	local new_sel, idx, param = dyn_select(data, entity)
 	
+	if idx and new_sel == nil then
+		idx = 0
+	end
+	
 	-- selected new platform, or selected via different index
 	-- same index can have platform change because orbital filter
 	-- same platform might still require selected index output to be updated
@@ -770,11 +942,9 @@ function radars.poll_dyn_select(data)
 	-- we want to only trigger switch pulse if output actually changes
 	assert(data.S.selected ~= new_sel or data.sel_idx ~= idx or param ~= data.dyn_param)
 	data.S.selected = new_sel
-	data.sel_idx = idx -- keep idx even if platform not found for change detect
+	data.sel_idx = idx
 	data.dyn_param = param
 	
-	--entity.surface.play_sound{ path="utility/entity_settings_pasted", position=entity.position, volume_multiplier=1.25, override_sound_type="game-effect" }
-	--entity.surface.play_sound{ path="utility/smart_pipette", position=entity.position, volume_multiplier=5.0, override_sound_type="game-effect" }
 	entity.surface.play_sound{ path="hexcoder_radar_uplink-sel-switch-sound1", position=entity.position }
 	entity.surface.play_sound{ path="hexcoder_radar_uplink-sel-switch-sound2", position=entity.position }
 	
